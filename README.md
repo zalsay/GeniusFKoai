@@ -1,4 +1,4 @@
-﻿# aBaiAutoplus
+﻿# GeniusFKoai
 
 <p align="center">
   <b>多平台 AI 账号自动注册与管理 · 协议化付款一键开通 奥特曼 Plus</b>
