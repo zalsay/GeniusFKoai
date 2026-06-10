@@ -1,0 +1,158 @@
+import sys
+import json
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, r"C:\Users\gool\repos\aBaiAutoplus\platforms\gopay-deploy\app\src")
+
+from opai.core.gojek_client import GojekClient, GOJEK_API_BASE
+from herosms_client import HeroSMS
+
+HEROSMS_API_KEY = ""
+
+def gojek_api_patch(client, path, body, extra_headers=None):
+    body_str = json.dumps(body)
+    headers = client._gojek_api_signed_headers(path, "PATCH", body_str, extra_headers)
+    resp = client._session.patch(
+        f"{GOJEK_API_BASE}{path}",
+        headers=headers,
+        data=body_str,
+        timeout_seconds=15,
+    )
+    try:
+        data = resp.json()
+    except Exception:
+        data = {"raw": resp.text}
+    return {"status": resp.status_code, "body": data}
+
+def main():
+    token_file = HERE / "latest_token.txt"
+    if not token_file.exists():
+        print("[-] 找不到 latest_token.txt")
+        return
+
+    token = token_file.read_text(encoding="utf-8").strip()
+    
+    state_file = HERE / "_gopay_state.json"
+    if not state_file.exists():
+        print("[-] 找不到 _gopay_state.json")
+        return
+        
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    client = GojekClient(
+        d1=state["d1"],
+        model=state["model"],
+        uniqueid=state["uniqueid"],
+        xm1=state["xm1_template"],
+        phone_make=state["phone_make"],
+        os_info=state["os_info"],
+        version="5.60.1",
+        appid="com.gojek.app",
+        user_uuid=state.get("user_uuid", ""),
+        session_id=state["session_id"],
+        device_token=state.get("device_token", ""),
+        access_token=token,
+    )
+
+    print("[*] 检查当前账号 Profile 状态...")
+    r_prof = client.get_user_profile()
+    if r_prof["status"] != 200:
+        print(f"[-] Profile 状态检查失败: {r_prof['status']}")
+        print(r_prof["body"])
+        return
+    print(f"[+] 当前账户封禁状态: {r_prof['body'].get('data', {}).get('blocked')}")
+
+    # 1. 初始化 HeroSMS 并检查余额
+    print("\n[*] 初始化 HeroSMS ...")
+    sms = HeroSMS(HEROSMS_API_KEY)
+    bal = sms.balance()
+    print(f"[+] HeroSMS 余额: {bal.get('balance', bal.get('raw'))}")
+
+    # 2. 租用泰国号码 (国家代码 52, 服务 ni)
+    print("[*] 正在购买泰国虚拟手机号...")
+    try:
+        order = sms.buy(service="ni", country=52)
+    except Exception as e:
+        print(f"[-] 购买手机号失败: {e}")
+        return
+
+    order_id = order["id"]
+    new_phone_raw = order["phoneNumber"]
+    # 格式化手机号 (带 + 前缀)
+    new_phone = new_phone_raw if new_phone_raw.startswith("+") else f"+{new_phone_raw}"
+    print(f"[+] 购买成功! 泰国号码: {new_phone} (订单ID: {order_id})")
+
+    # 3. 发起个人资料修改请求
+    pin = "303384"  # 用户当前 PIN
+    email = "gopay_test_user_released@gmail.com"
+    body = {
+        "phone": new_phone,
+        "signed_up_country": "ID",
+        "email": email
+    }
+    extra_headers = {"pin": pin}
+
+    print(f"\n[*] 正在提交修改手机号请求到 GoPay 服务器...")
+    print(f"    目标手机号: {new_phone}")
+    
+    r_update = gojek_api_patch(client, "/v5/customers", body, extra_headers)
+    if r_update["status"] != 200:
+        print(f"[-] 提交修改请求失败 (HTTP {r_update['status']})")
+        print(json.dumps(r_update["body"], indent=2, ensure_ascii=False))
+        print("[*] 正在取消 HeroSMS 订单...")
+        sms.cancel(order_id)
+        return
+
+    otp_token = r_update["body"].get("data", {}).get("otp_token")
+    if not otp_token:
+        print("[-] 未在响应中获取到 otp_token")
+        print(r_update["body"])
+        print("[*] 正在取消 HeroSMS 订单...")
+        sms.cancel(order_id)
+        return
+
+    print(f"[+] 提交成功! 获取到 OTP Token: {otp_token}")
+    print("[*] 开始轮询 HeroSMS 等待 4 位验证码短信 (最多等待 3 分钟)...")
+
+    # 4. 轮询验证码
+    try:
+        otp_code, _ = sms.poll_code(order_id, timeout=180, interval=5)
+        print(f"[+] 成功捕获到验证码: {otp_code}")
+    except Exception as e:
+        print(f"[-] 轮询验证码超时或失败: {e}")
+        print("[*] 正在取消 HeroSMS 订单...")
+        sms.cancel(order_id)
+        return
+
+    # 5. 提交验证码
+    print("\n[*] 正在提交验证码进行确认...")
+    v_body = {
+        "otp": otp_code,
+        "otp_token": otp_token
+    }
+    r_verify = client._gojek_api_post("/v5/customers/verificationUpdateProfile", v_body)
+    
+    if r_verify["status"] == 200:
+        print("\n" + "=" * 60)
+        print("🎉 恭喜！手机号改绑并释放成功！")
+        print(f"  旧手机号已释放。")
+        print(f"  新绑定手机号: {new_phone}")
+        print("=" * 60)
+        
+        # 确认 HeroSMS 订单
+        sms.finish(order_id)
+        
+        # 备份并清空本地已失效的 state/token，以备重新注册
+        if token_file.exists():
+            token_file.unlink()
+        print("[*] 已清理旧的 Token 文件，现在可以安全注册主号了。")
+    else:
+        print(f"[-] 验证码提交失败 (HTTP {r_verify['status']})")
+        print(r_verify["body"])
+        print("[*] 正在取消 HeroSMS 订单...")
+        sms.cancel(order_id)
+
+if __name__ == "__main__":
+    main()

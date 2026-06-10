@@ -1,0 +1,4 @@
+001_152619_app.midtrans.com_snap_v4_redirection_da8e6e4c-2efa-4024-ae33.html	https://app.midtrans.com/snap/v4/redirection/da8e6e4c-2efa-4024-ae33-46f1c59439a2
+002_152625_app.midtrans.com_snap_v4_redirection_da8e6e4c-2efa-4024-ae33.html	https://app.midtrans.com/snap/v4/redirection/da8e6e4c-2efa-4024-ae33-46f1c59439a2
+003_152628_app.midtrans.com_snap_v4_redirection_da8e6e4c-2efa-4024-ae33.html	https://app.midtrans.com/snap/v4/redirection/da8e6e4c-2efa-4024-ae33-46f1c59439a2
+004_152631_app.midtrans.com_snap_v4_redirection_da8e6e4c-2efa-4024-ae33.html	https://app.midtrans.com/snap/v4/redirection/da8e6e4c-2efa-4024-ae33-46f1c59439a2#/gopay-tokenization/linking
