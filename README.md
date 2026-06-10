@@ -103,20 +103,8 @@
 
 ### QQ群
 
-![QQ群](assets/screenshots/QQ群交流.jpg)
 点击链接加入群聊【奥特曼 PLUS交流群aBaiAutoplus】：https://qm.qq.com/q/ZrmNa3JHKC
-
-### gopay注册生成奥特曼plus
-
-![gopay注册生成奥特曼plus](assets/screenshots/gopay注册生成奥特曼plus.png)
-
-### PayPal注册奥特曼plus
-
-![PayPal注册奥特曼plus](assets/screenshots/PayPal注册奥特曼plus.png)
-
-### PayPal注册奥特曼plus
-
-![PayPal注册奥特曼plus](assets/screenshots/PayPal注册奥特曼plus2.png)
+![QQ群](assets/screenshots/QQ群交流.jpg)
 
 ### 设置
 
