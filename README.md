@@ -103,13 +103,8 @@
 
 ### QQ群
 
-点击链接加入群聊【奥特曼 PLUS交流群aBaiAutoplus】：https://qm.qq.com/q/ZrmNa3JHKC
+点击链接加入群聊：https://qm.qq.com/q/ZrmNa3JHKC
 ![QQ群](assets/screenshots/QQ群交流.jpg)
-
-### 设置
-
-![设置](assets/screenshots/设置2.png)
-![设置](assets/screenshots/设置.png)
 
 ## 技术栈
 
