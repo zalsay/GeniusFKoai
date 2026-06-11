@@ -32,6 +32,8 @@ const BROWSER_MODE_OPTIONS = [
   { value: 'bitbrowser_headless', label: 'BitBrowser Headless' },
 ]
 
+const ACCOUNT_TOOL_BUTTON_CLASS = 'h-8 shrink-0 whitespace-nowrap bg-transparent'
+
 function getAccountOverview(acc: any) {
   return acc?.overview || {}
 }
@@ -1619,8 +1621,9 @@ function ExportMenu({
         size="sm"
         onClick={() => setOpen(v => !v)}
         disabled={total === 0 || !!loading}
+        className={ACCOUNT_TOOL_BUTTON_CLASS}
       >
-        <Download className="h-4 w-4 mr-1" />
+        <Download className="h-4 w-4 mr-1 shrink-0" />
         {loading ? '导出中...' : hasSelection ? `导出已选(${selectedIds.length})` : '导出'}
       </Button>
       {open && (
@@ -2332,14 +2335,14 @@ export default function Accounts() {
       )}
 
       <Card className="shrink-0 bg-[var(--bg-pane)]/40 border border-[var(--border)] shadow-sm">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 px-5 py-4 border-b border-[var(--border)]/50">
-          <div className="flex items-center gap-3">
-            <h1 className="text-lg font-semibold tracking-tight text-[var(--text-primary)]">
+        <div className="flex flex-col gap-3 px-5 py-4 border-b border-[var(--border)]/50 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-3">
+            <h1 className="shrink-0 text-lg font-semibold tracking-tight text-[var(--text-primary)]">
               {platformLabel}
             </h1>
-            <div className="h-4 w-[1px] bg-[var(--border)]"></div>
-            <div className="flex items-center gap-1.5 text-xs">
-              <span className="text-[var(--text-muted)]">{t('accounts.count', { count: total })}</span>
+            <div className="hidden h-4 w-[1px] bg-[var(--border)] sm:block"></div>
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
+              <span className="shrink-0 text-[var(--text-muted)]">{t('accounts.count', { count: total })}</span>
               {visibleTrial > 0 && <span className="flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 font-medium text-emerald-500 ring-1 ring-inset ring-emerald-500/20">{t('accounts.trial', { count: visibleTrial })}</span>}
               {visibleSubscribed > 0 && <span className="flex items-center rounded-full bg-blue-500/10 px-2 py-0.5 font-medium text-blue-500 ring-1 ring-inset ring-blue-500/20">{t('accounts.subscribed', { count: visibleSubscribed })}</span>}
               {linkedCashier > 0 && <span className="flex items-center rounded-full bg-amber-500/10 px-2 py-0.5 font-medium text-amber-500 ring-1 ring-inset ring-amber-500/20">{t('accounts.linked', { count: linkedCashier })}</span>}
@@ -2347,14 +2350,14 @@ export default function Accounts() {
               {selectedCount > 0 && <span className="flex items-center rounded-full bg-[var(--text-primary)]/10 px-2 py-0.5 font-medium text-[var(--text-primary)] ring-1 ring-inset ring-[var(--text-primary)]/20">{t('accounts.selected', { count: selectedCount })}</span>}
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Button size="sm" onClick={() => setShowRegister(true)} className="h-8 shadow-sm">
-              <Plus className="mr-1.5 h-3.5 w-3.5" />
+          <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto lg:justify-end">
+            <Button size="sm" onClick={() => setShowRegister(true)} className="h-8 shrink-0 whitespace-nowrap shadow-sm">
+              <Plus className="mr-1.5 h-3.5 w-3.5 shrink-0" />
               {t('accounts.autoRegister')}
             </Button>
-            <div className="h-4 w-[1px] bg-[var(--border)]"></div>
-            <Button size="sm" variant="outline" onClick={() => setShowImport(true)} className="h-8 bg-transparent">
-              <Upload className="mr-1.5 h-3.5 w-3.5" />
+            <div className="hidden h-4 w-[1px] shrink-0 bg-[var(--border)] sm:block"></div>
+            <Button size="sm" variant="outline" onClick={() => setShowImport(true)} className={ACCOUNT_TOOL_BUTTON_CLASS}>
+              <Upload className="mr-1.5 h-3.5 w-3.5 shrink-0" />
               {t('accounts.import')}
             </Button>
             {tab === 'chatgpt' ? (
@@ -2366,8 +2369,8 @@ export default function Accounts() {
                 selectedIds={[...selectedIds]}
               />
             ) : (
-              <Button size="sm" variant="outline" onClick={exportCsv} disabled={accounts.length === 0} className="h-8 bg-transparent">
-                <Download className="mr-1.5 h-3.5 w-3.5" />
+              <Button size="sm" variant="outline" onClick={exportCsv} disabled={accounts.length === 0} className={ACCOUNT_TOOL_BUTTON_CLASS}>
+                <Download className="mr-1.5 h-3.5 w-3.5 shrink-0" />
                 {t('accounts.export')}
               </Button>
             )}
@@ -2384,12 +2387,12 @@ export default function Accounts() {
                   setOauthConfirmOpen(true)
                 }}
                 disabled={oauthBusy || selectedCount === 0}
-                className="h-8 bg-transparent"
+                className={ACCOUNT_TOOL_BUTTON_CLASS}
               >
                 {oauthBusy ? (
-                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 shrink-0 animate-spin" />
                 ) : (
-                  <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
+                  <ShieldCheck className="mr-1.5 h-3.5 w-3.5 shrink-0" />
                 )}
                 Codex OAuth
               </Button>
@@ -2407,12 +2410,12 @@ export default function Accounts() {
                   setGetRtConfirmOpen(true)
                 }}
                 disabled={getRtBusy || selectedCount === 0}
-                className="h-8 bg-transparent"
+                className={ACCOUNT_TOOL_BUTTON_CLASS}
               >
                 {getRtBusy ? (
-                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 shrink-0 animate-spin" />
                 ) : (
-                  <Zap className="mr-1.5 h-3.5 w-3.5" />
+                  <Zap className="mr-1.5 h-3.5 w-3.5 shrink-0" />
                 )}
                 获取rt
               </Button>
@@ -2430,18 +2433,18 @@ export default function Accounts() {
                   setGetRtBypassConfirmOpen(true)
                 }}
                 disabled={getRtBypassBusy || selectedCount === 0}
-                className="h-8 bg-transparent"
+                className={ACCOUNT_TOOL_BUTTON_CLASS}
               >
                 {getRtBypassBusy ? (
-                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 shrink-0 animate-spin" />
                 ) : (
-                  <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
+                  <ShieldCheck className="mr-1.5 h-3.5 w-3.5 shrink-0" />
                 )}
                 获取rt(绕过)
               </Button>
             )}
-            <Button size="sm" variant="outline" onClick={() => setShowAdd(true)} className="h-8 bg-transparent">
-              <Plus className="mr-1.5 h-3.5 w-3.5" />
+            <Button size="sm" variant="outline" onClick={() => setShowAdd(true)} className={ACCOUNT_TOOL_BUTTON_CLASS}>
+              <Plus className="mr-1.5 h-3.5 w-3.5 shrink-0" />
               {t('accounts.manualAdd')}
             </Button>
           </div>

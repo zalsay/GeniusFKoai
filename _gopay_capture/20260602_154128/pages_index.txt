@@ -1,5 +1,0 @@
-001_154323_app.midtrans.com_snap_v4_redirection_d2e5232c-9ce6-420e-996c.html	https://app.midtrans.com/snap/v4/redirection/d2e5232c-9ce6-420e-996c-b2b7af75414d
-002_154326_app.midtrans.com_snap_v4_redirection_d2e5232c-9ce6-420e-996c.html	https://app.midtrans.com/snap/v4/redirection/d2e5232c-9ce6-420e-996c-b2b7af75414d
-003_154329_app.midtrans.com_snap_v4_redirection_d2e5232c-9ce6-420e-996c.html	https://app.midtrans.com/snap/v4/redirection/d2e5232c-9ce6-420e-996c-b2b7af75414d
-004_154332_app.midtrans.com_snap_v4_redirection_d2e5232c-9ce6-420e-996c.html	https://app.midtrans.com/snap/v4/redirection/d2e5232c-9ce6-420e-996c-b2b7af75414d
-005_154335_app.midtrans.com_snap_v4_redirection_d2e5232c-9ce6-420e-996c.html	https://app.midtrans.com/snap/v4/redirection/d2e5232c-9ce6-420e-996c-b2b7af75414d#/504
