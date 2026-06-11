@@ -5,10 +5,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/asz798838958/aBaiAutoplus/stargazers"><img src="https://img.shields.io/github/stars/asz798838958/aBaiAutoplus?style=for-the-badge&logo=github&color=FFB003" alt="Stars" /></a>
-  <a href="https://github.com/asz798838958/aBaiAutoplus/network/members"><img src="https://img.shields.io/github/forks/asz798838958/aBaiAutoplus?style=for-the-badge&logo=github&color=blue" alt="Forks" /></a>
-  <a href="https://github.com/asz798838958/aBaiAutoplus/releases"><img src="https://img.shields.io/github/v/release/asz798838958/aBaiAutoplus?style=for-the-badge&logo=github&color=green" alt="Release" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/asz798838958/aBaiAutoplus?style=for-the-badge&color=orange" alt="License" /></a>
+  <a href="https://github.com/asz798838958/GeniusFKoai/stargazers"><img src="https://img.shields.io/github/stars/asz798838958/GeniusFKoai?style=for-the-badge&logo=github&color=FFB003" alt="Stars" /></a>
+  <a href="https://github.com/asz798838958/GeniusFKoai/network/members"><img src="https://img.shields.io/github/forks/asz798838958/GeniusFKoai?style=for-the-badge&logo=github&color=blue" alt="Forks" /></a>
+  <a href="https://github.com/asz798838958/GeniusFKoai/releases"><img src="https://img.shields.io/github/v/release/asz798838958/GeniusFKoai?style=for-the-badge&logo=github&color=green" alt="Release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/asz798838958/GeniusFKoai?style=for-the-badge&color=orange" alt="License" /></a>
 </p>
 
 <p align="center">
@@ -129,8 +129,8 @@
 
 ```bash
 # 克隆项目
-git clone https://github.com/asz798838958/aBaiAutoplus.git
-cd aBaiAutoplus
+git clone https://github.com/asz798838958/GeniusFKoai.git
+cd GeniusFKoai
 
 # 创建虚拟环境
 python3 -m venv .venv
@@ -150,8 +150,8 @@ cd ..
 
 ```bat
 :: 克隆项目
-git clone https://github.com/asz798838958/aBaiAutoplus.git
-cd aBaiAutoplus
+git clone https://github.com/asz798838958/GeniusFKoai.git
+cd GeniusFKoai
 
 :: 创建虚拟环境
 python -m venv .venv
@@ -256,8 +256,8 @@ npm run dev
 ### 从源码构建
 
 ```bash
-git clone https://github.com/asz798838958/aBaiAutoplus.git
-cd aBaiAutoplus
+git clone https://github.com/asz798838958/GeniusFKoai.git
+cd GeniusFKoai
 docker compose up -d --build
 ```
 
@@ -413,7 +413,7 @@ docker compose down         # 停止
 
 跳过标签只依赖 `/api/external/accounts` 返回的 `tags` 字段，使用 API Key 即可。完成后自动打标签属于 outlookEmail 管理端写操作，需要填写管理员密码；系统会临时登录管理端、获取 CSRF Token、必要时创建标签，再调用 `/api/accounts/tags` 给对应邮箱账号打标签。打标签失败只会记录 warning，不会把已成功的注册或付款反向判失败。
 
-安全边界：aBaiAutoplus 不读取也不保存 Outlook 原始密码、Refresh Token 或 Microsoft Graph 凭据；注册账号关联信息只记录邮箱地址、outlookEmail 账号 ID、分组和刷新状态等非密钥元数据。API Key 和可选管理员密码仅作为 provider 配置字段保存，不会写入注册账号凭证；请不要写入代码、README、测试 fixture 或提交记录。
+安全边界：GeniusFKoai 不读取也不保存 Outlook 原始密码、Refresh Token 或 Microsoft Graph 凭据；注册账号关联信息只记录邮箱地址、outlookEmail 账号 ID、分组和刷新状态等非密钥元数据。API Key 和可选管理员密码仅作为 provider 配置字段保存，不会写入注册账号凭证；请不要写入代码、README、测试 fixture 或提交记录。
 
 ### 本地微软邮箱池
 
