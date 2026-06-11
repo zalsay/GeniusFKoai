@@ -156,6 +156,7 @@ class GetRtTaskRequest(BaseModel):
     smspool_max_price: str = "0.13"
     smsapi_phone: str = ""
     smsapi_url: str = ""
+    phone_reuse_count: int = 3
 
 
 @router.post("/get-rt")

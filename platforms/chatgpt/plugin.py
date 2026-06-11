@@ -851,7 +851,11 @@ class ChatGPTPlatform(BasePlatform):
             # ★ 手机号 OTP 回调（可选）
             phone_callback = None
             sms_provider = str(params.get("sms_provider") or "").strip().lower()
-            if sms_provider:
+            supplied_phone_callback = params.get("phone_callback")
+            if callable(supplied_phone_callback):
+                phone_callback = supplied_phone_callback
+                log_fn(f"  获取rt: 使用任务级手机号复用 callback provider={sms_provider or '(unknown)'}")
+            elif sms_provider:
                 phone_callback, phone_error = build_get_rt_phone_callback(
                     sms_provider=sms_provider,
                     smspool_api_key=str(params.get("smspool_api_key") or ""),

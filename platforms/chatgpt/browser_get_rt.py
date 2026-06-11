@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from typing import Any, Callable, Optional
 from urllib.parse import urljoin
@@ -744,3 +745,376 @@ def build_get_rt_phone_callback(
 
     # 无配置：不提供 phone callback，add_phone 将报错
     return None, "未配置 SMS（sms_provider 为空）"
+
+
+def _parse_smsapi_phone_entries(smsapi_phone: str, smsapi_url: str = "") -> list[str]:
+    entries: list[str] = []
+    default_url = str(smsapi_url or "").strip()
+    for raw_line in re.split(r"[\r\n]+", str(smsapi_phone or "")):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if "----" in line:
+            phone_part, url_part = line.split("----", 1)
+            phone = phone_part.strip()
+            url = url_part.strip() or default_url
+            if phone and url:
+                entries.append(f"{phone}----{url}")
+            elif phone:
+                entries.append(phone)
+            continue
+        if default_url:
+            entries.append(f"{line}----{default_url}")
+        else:
+            entries.append(line)
+    return entries
+
+
+class _GetRtPhoneLease:
+    def __init__(self, *, lease_id: int, provider: str, channel, phone: str, aid: str, max_uses: int):
+        self.lease_id = lease_id
+        self.provider = provider
+        self.channel = channel
+        self.phone = phone
+        self.aid = aid
+        self.max_uses = max_uses
+        self.completed_uses = 0
+        self.in_use = False
+        self.retired = False
+        self.last_code = ""
+
+    @property
+    def next_use_no(self) -> int:
+        return self.completed_uses + 1
+
+    def prepare_for_use(self, log: Callable[[str], None]) -> None:
+        if self.completed_uses <= 0 or not hasattr(self.channel, "request_another"):
+            return
+        try:
+            ok = bool(self.channel.request_another(self.aid))
+        except Exception as exc:
+            log(f"  [phone-pool] request another failed phone={self.phone}: {exc}")
+            ok = False
+        if ok:
+            log(f"  [phone-pool] reuse phone={self.phone} use={self.next_use_no}/{self.max_uses}")
+        else:
+            log(
+                f"  [phone-pool] reuse phone={self.phone} without resend ack "
+                f"use={self.next_use_no}/{self.max_uses}"
+            )
+
+    def wait_code(self, log: Callable[[str], None]) -> str:
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline:
+            try:
+                try:
+                    code = self.channel.wait_code(
+                        self.aid,
+                        timeout=30,
+                        ignore_code=self.last_code or None,
+                    )
+                except TypeError:
+                    code = self.channel.wait_code(self.aid, timeout=30)
+                if code:
+                    self.last_code = str(code)
+                    log(f"  [phone-pool] received code phone={self.phone} code={code}")
+                    return str(code)
+            except Exception as exc:
+                log(f"  [phone-pool] wait_code failed phone={self.phone}: {exc}")
+            time.sleep(3)
+        raise RuntimeError(f"get_rt: {self.provider} wait sms otp timeout (3min)")
+
+    def close_success(self) -> None:
+        if hasattr(self.channel, "done"):
+            try:
+                self.channel.done(self.aid)
+            except Exception:
+                pass
+
+    def close_failure(self) -> None:
+        if self.completed_uses > 0:
+            self.close_success()
+            return
+        if hasattr(self.channel, "cancel"):
+            try:
+                self.channel.cancel(self.aid)
+            except Exception:
+                pass
+
+
+class GetRtPhoneReusePool:
+    """Task-level phone lease pool for batch get_rt.
+
+    A lease is assigned to one account at a time. After a successful account,
+    the same phone can be reused by the next account until ``reuse_count``
+    successes are reached, then the lease is closed and a fresh phone is used.
+    """
+
+    def __init__(
+        self,
+        *,
+        provider: str,
+        reuse_count: int = 3,
+        smspool_api_key: str = "",
+        smspool_max_price: str = "0.13",
+        smsapi_phone: str = "",
+        smsapi_url: str = "",
+        log_fn=None,
+    ):
+        self.provider = str(provider or "").strip().lower()
+        self.reuse_count = max(int(reuse_count or 3), 3)
+        self.smspool_api_key = str(smspool_api_key or "").strip()
+        self.smspool_max_price = str(smspool_max_price or "0.13").strip()
+        self.smsapi_entries = _parse_smsapi_phone_entries(smsapi_phone, smsapi_url)
+        self.smsapi_url = str(smsapi_url or "").strip()
+        self.log = log_fn or (lambda _: None)
+        self._lock = threading.RLock()
+        self._leases: list[_GetRtPhoneLease] = []
+        self._next_lease_id = 1
+        self._next_smsapi_index = 0
+
+    def make_callback(self, *, label: str = ""):
+        return GetRtReusablePhoneCallback(self, label=label)
+
+    def acquire(self, *, label: str = "") -> _GetRtPhoneLease:
+        with self._lock:
+            lease = self._find_available_locked()
+            if lease is None:
+                lease = self._create_lease_locked()
+                self._leases.append(lease)
+            lease.in_use = True
+            use_no = lease.next_use_no
+
+        try:
+            lease.prepare_for_use(self.log)
+        except Exception:
+            self.report_failure(lease)
+            raise
+
+        self.log(
+            f"  [phone-pool] assigned phone={lease.phone} "
+            f"use={use_no}/{lease.max_uses} task={label or '-'}"
+        )
+        return lease
+
+    def report_success(self, lease: _GetRtPhoneLease | None) -> None:
+        if lease is None:
+            return
+        close_lease = False
+        with self._lock:
+            if lease.retired:
+                return
+            lease.completed_uses += 1
+            lease.in_use = False
+            if lease.completed_uses >= lease.max_uses:
+                lease.retired = True
+                close_lease = True
+        self.log(
+            f"  [phone-pool] success phone={lease.phone} "
+            f"count={lease.completed_uses}/{lease.max_uses}"
+        )
+        if close_lease:
+            lease.close_success()
+            self.log(f"  [phone-pool] phone exhausted, closed: {lease.phone}")
+
+    def report_failure(self, lease: _GetRtPhoneLease | None) -> None:
+        if lease is None:
+            return
+        should_close = False
+        with self._lock:
+            if not lease.retired:
+                lease.retired = True
+                should_close = True
+            lease.in_use = False
+        if should_close:
+            lease.close_failure()
+            self.log(f"  [phone-pool] phone retired after failure: {lease.phone}")
+
+    def cleanup(self) -> None:
+        leases_to_close: list[_GetRtPhoneLease] = []
+        with self._lock:
+            for lease in self._leases:
+                if lease.retired:
+                    continue
+                lease.retired = True
+                lease.in_use = False
+                leases_to_close.append(lease)
+        for lease in leases_to_close:
+            if lease.completed_uses > 0:
+                lease.close_success()
+            else:
+                lease.close_failure()
+            self.log(f"  [phone-pool] cleanup phone={lease.phone}")
+
+    def _find_available_locked(self) -> _GetRtPhoneLease | None:
+        for lease in self._leases:
+            if lease.retired or lease.in_use:
+                continue
+            if lease.completed_uses >= lease.max_uses:
+                lease.retired = True
+                continue
+            return lease
+        return None
+
+    def _create_lease_locked(self) -> _GetRtPhoneLease:
+        lease_id = self._next_lease_id
+        self._next_lease_id += 1
+        if self.provider == "smsapi":
+            if not self.smsapi_entries:
+                raise RuntimeError("smsapi phone list is empty")
+            if self._next_smsapi_index >= len(self.smsapi_entries):
+                raise RuntimeError(
+                    "smsapi phone list exhausted; add more +phone----URL lines "
+                    f"or lower concurrency/total accounts (reuse_count={self.reuse_count})"
+                )
+            entry = self.smsapi_entries[self._next_smsapi_index]
+            self._next_smsapi_index += 1
+            builder = GetRtPhoneCallback(
+                provider="smsapi",
+                smsapi_phone=entry,
+                smsapi_url=self.smsapi_url,
+                log_fn=self.log,
+            )
+            channel, phone, aid = builder._build_smsapi()
+        else:
+            builder = GetRtPhoneCallback(
+                provider="smspool",
+                smspool_api_key=self.smspool_api_key,
+                smspool_max_price=self.smspool_max_price,
+                log_fn=self.log,
+            )
+            channel, phone, aid = builder._build_smspool()
+        if not phone or not aid:
+            raise RuntimeError(f"get_rt: {self.provider} failed to get phone")
+        self.log(f"  [phone-pool] new phone lease#{lease_id}: {phone} (aid={aid})")
+        return _GetRtPhoneLease(
+            lease_id=lease_id,
+            provider=self.provider,
+            channel=channel,
+            phone=phone,
+            aid=aid,
+            max_uses=self.reuse_count,
+        )
+
+
+class GetRtReusablePhoneCallback:
+    def __init__(self, pool: GetRtPhoneReusePool, *, label: str = ""):
+        self._pool = pool
+        self._label = label
+        self._lease: _GetRtPhoneLease | None = None
+        self._phase = "need_number"
+        self._completed = False
+        self._resend_callback = None
+        self._last_error = ""
+
+    @property
+    def phase(self):
+        return self._phase
+
+    @phase.setter
+    def phase(self, value):
+        self._phase = str(value or "")
+        if self._phase == "need_number":
+            self._lease = None
+            self._completed = False
+
+    @property
+    def activation(self):
+        return None
+
+    @activation.setter
+    def activation(self, value):
+        pass
+
+    @property
+    def completed(self):
+        return self._completed
+
+    @completed.setter
+    def completed(self, value):
+        self._completed = bool(value)
+
+    def set_resend_callback(self, cb):
+        self._resend_callback = cb
+
+    def mark_send_failed(self, reason: str = ""):
+        self._last_error = str(reason or "")
+        self._pool.log(f"  [phone-pool] send failed: {self._last_error[:120]}")
+
+    def mark_send_succeeded(self):
+        self._pool.log("  [phone-pool] send succeeded")
+
+    def mark_code_failed(self, reason: str = ""):
+        self._last_error = str(reason or "")
+        self._pool.log(f"  [phone-pool] code failed: {self._last_error[:120]}")
+
+    def __call__(self) -> str:
+        if self._phase == "need_number":
+            self._lease = self._pool.acquire(label=self._label)
+            self._phase = "need_code"
+            return self._lease.phone
+        if self._phase == "need_code":
+            if not self._lease:
+                raise RuntimeError("get_rt phone lease missing")
+            return self._lease.wait_code(self._pool.log)
+        return ""
+
+    def report_success(self):
+        if self._completed:
+            return
+        self._completed = True
+        self._phase = "done"
+        self._pool.report_success(self._lease)
+
+    def cleanup(self):
+        if self._completed:
+            return
+        self._pool.report_failure(self._lease)
+        self._lease = None
+        self._phase = "need_number"
+
+
+def build_get_rt_phone_reuse_pool(
+    *,
+    sms_provider: str = "",
+    smspool_api_key: str = "",
+    smspool_max_price: str = "0.13",
+    smsapi_phone: str = "",
+    smsapi_url: str = "",
+    reuse_count: int = 3,
+    log_fn=None,
+):
+    provider = str(sms_provider or "").strip().lower()
+    if not provider:
+        return None, "sms_provider is empty"
+    if provider == "smspool":
+        from platforms.gopay.sms_channel import SMSPOOL_DEFAULT_API_KEY
+
+        key = str(smspool_api_key or "").strip() or SMSPOOL_DEFAULT_API_KEY
+        if not key:
+            return None, "smspool API key is empty"
+        return GetRtPhoneReusePool(
+            provider="smspool",
+            reuse_count=reuse_count,
+            smspool_api_key=key,
+            smspool_max_price=str(smspool_max_price or "0.13").strip(),
+            log_fn=log_fn,
+        ), ""
+    if provider == "smsapi":
+        entries = _parse_smsapi_phone_entries(smsapi_phone, smsapi_url)
+        if not entries:
+            return None, "smsapi phone is empty"
+        missing_url = [
+            entry for entry in entries
+            if "----" not in entry and not str(smsapi_url or "").strip()
+        ]
+        if missing_url:
+            return None, "smsapi query URL is empty"
+        return GetRtPhoneReusePool(
+            provider="smsapi",
+            reuse_count=reuse_count,
+            smsapi_phone="\n".join(entries),
+            smsapi_url=str(smsapi_url or "").strip(),
+            log_fn=log_fn,
+        ), ""
+    return None, f"unsupported sms_provider: {provider}"

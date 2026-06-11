@@ -1823,6 +1823,38 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     from core.db import engine, AccountModel
     from sqlmodel import Session
 
+    sms_provider = str(payload.get("sms_provider") or "").strip().lower()
+    try:
+        phone_reuse_count = max(int(payload.get("phone_reuse_count") or 3), 3)
+    except Exception:
+        phone_reuse_count = 3
+    phone_reuse_pool = None
+    if sms_provider in {"smspool", "smsapi"}:
+        try:
+            from platforms.chatgpt.browser_get_rt import build_get_rt_phone_reuse_pool
+
+            phone_reuse_pool, phone_pool_error = build_get_rt_phone_reuse_pool(
+                sms_provider=sms_provider,
+                smspool_api_key=str(payload.get("smspool_api_key") or ""),
+                smspool_max_price=str(payload.get("smspool_max_price") or "0.13"),
+                smsapi_phone=str(payload.get("smsapi_phone") or ""),
+                smsapi_url=str(payload.get("smsapi_url") or ""),
+                reuse_count=phone_reuse_count,
+                log_fn=logger.log,
+            )
+            if phone_reuse_pool:
+                logger.log(
+                    f"获取rt: 启用任务级手机号复用 provider={sms_provider}, "
+                    f"每号成功 {phone_reuse_count} 次后换号"
+                )
+            else:
+                logger.log(f"获取rt: 手机号复用池创建失败: {phone_pool_error}", level="error")
+        except Exception as exc:
+            logger.log(f"获取rt: 手机号复用池初始化异常: {exc}", level="error")
+            phone_reuse_pool = None
+    elif sms_provider:
+        logger.log(f"获取rt: 未知手机号 provider={sms_provider}，将按原流程继续", level="error")
+
     results: list[dict[str, Any] | None] = [None] * total
     completed = 0
 
@@ -1833,21 +1865,26 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                 return {"ok": False, "account_id": account_id, "error": "任务已取消"}
             logger.log(f"[{index + 1}/{total}] 获取rt: 账号 #{account_id}")
             runtime = PlatformRuntime()
-            sms_provider = str(payload.get("sms_provider") or "").strip().lower()
+            command_params = {
+                "browser_mode": browser_mode,
+                "record_har": str(payload.get("record_har") or "").strip().lower(),
+                "sms_provider": sms_provider,
+                "smspool_api_key": str(payload.get("smspool_api_key") or ""),
+                "smspool_max_price": str(payload.get("smspool_max_price") or "0.13"),
+                "smsapi_phone": str(payload.get("smsapi_phone") or ""),
+                "smsapi_url": str(payload.get("smsapi_url") or ""),
+                "phone_reuse_count": str(phone_reuse_count),
+            }
+            if phone_reuse_pool:
+                command_params["phone_callback"] = phone_reuse_pool.make_callback(
+                    label=f"{index + 1}/{total}"
+                )
             result = runtime.execute_action(
                 type("Command", (), {
                     "platform": "chatgpt",
                     "account_id": account_id,
                     "action_id": "get_rt",
-                    "params": {
-                        "browser_mode": browser_mode,
-                        "record_har": str(payload.get("record_har") or "").strip().lower(),
-                        "sms_provider": sms_provider,
-                        "smspool_api_key": str(payload.get("smspool_api_key") or ""),
-                        "smspool_max_price": str(payload.get("smspool_max_price") or "0.13"),
-                        "smsapi_phone": str(payload.get("smsapi_phone") or ""),
-                        "smsapi_url": str(payload.get("smsapi_url") or ""),
-                    },
+                    "params": command_params,
                 })(),
                 log_fn=logger.log,
                 cancel_check=logger.is_cancel_requested,
@@ -1868,34 +1905,41 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
     from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
-    with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        future_map = {}
-        next_index = 0
-        while next_index < total and len(future_map) < concurrency and not logger.is_cancel_requested():
-            future = pool.submit(run_one, next_index, ids[next_index])
-            future_map[future] = next_index
-            next_index += 1
-
-        while future_map:
-            done, _pending = wait(future_map.keys(), return_when=FIRST_COMPLETED)
-            for future in done:
-                index = future_map.pop(future)
-                try:
-                    item = future.result()
-                except Exception as exc:
-                    item = {"ok": False, "account_id": ids[index], "error": str(exc)}
-                results[index] = item
-                if item.get("ok"):
-                    logger.record_success()
-                else:
-                    logger.record_error(str(item.get("error") or "unknown error"))
-                completed += 1
-                logger.set_progress(completed, total)
-
+    try:
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            future_map = {}
+            next_index = 0
             while next_index < total and len(future_map) < concurrency and not logger.is_cancel_requested():
                 future = pool.submit(run_one, next_index, ids[next_index])
                 future_map[future] = next_index
                 next_index += 1
+
+            while future_map:
+                done, _pending = wait(future_map.keys(), return_when=FIRST_COMPLETED)
+                for future in done:
+                    index = future_map.pop(future)
+                    try:
+                        item = future.result()
+                    except Exception as exc:
+                        item = {"ok": False, "account_id": ids[index], "error": str(exc)}
+                    results[index] = item
+                    if item.get("ok"):
+                        logger.record_success()
+                    else:
+                        logger.record_error(str(item.get("error") or "unknown error"))
+                    completed += 1
+                    logger.set_progress(completed, total)
+
+                while next_index < total and len(future_map) < concurrency and not logger.is_cancel_requested():
+                    future = pool.submit(run_one, next_index, ids[next_index])
+                    future_map[future] = next_index
+                    next_index += 1
+    finally:
+        if phone_reuse_pool:
+            try:
+                phone_reuse_pool.cleanup()
+            except Exception as exc:
+                logger.log(f"获取rt: 手机号复用池清理异常: {exc}", level="error")
 
     final_results = [item for item in results if item is not None]
     success_count = sum(1 for item in final_results if item.get("ok"))

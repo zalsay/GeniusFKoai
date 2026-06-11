@@ -104,3 +104,58 @@ def test_get_rt_record_har_creates_camoufox_context_and_returns_path(monkeypatch
     }
     assert fake_browser.context.closed is True
     assert result["data"]["record_har_path"] == expected_har_path
+
+
+def test_get_rt_uses_supplied_phone_callback(monkeypatch):
+    fake_browser = _FakeBrowser()
+    supplied_phone_callback = lambda: "+15550000001"
+    seen = {}
+
+    monkeypatch.setattr(
+        ChatGPTPlatform,
+        "_build_get_rt_mailbox_otp_callback",
+        lambda self, account, log_fn, proxy: (lambda: "123456", ""),
+    )
+    monkeypatch.setattr(
+        browser_get_rt_module,
+        "setup_oauth_state_capture",
+        lambda page, log=None: None,
+    )
+    monkeypatch.setattr(
+        browser_get_rt_module,
+        "build_get_rt_phone_callback",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("should use supplied callback")),
+    )
+    monkeypatch.setattr(
+        browser_register_module.ChatGPTBrowserRegister,
+        "_open_browser",
+        lambda self, launch_opts: _FakeBrowserManager(fake_browser),
+    )
+
+    def fake_oauth(*args, **kwargs):
+        seen["phone_callback"] = args[5]
+        return {
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+            "id_token": "id-token",
+            "account_id": "acct-123",
+        }
+
+    monkeypatch.setattr(browser_register_module, "_do_codex_oauth", fake_oauth)
+
+    platform = ChatGPTPlatform(RegisterConfig())
+    result = platform._handle_get_rt(
+        Account(
+            platform="chatgpt",
+            email="user@example.com",
+            password="Secret123!",
+        ),
+        {
+            "browser_mode": "camoufox_headed",
+            "sms_provider": "smspool",
+            "phone_callback": supplied_phone_callback,
+        },
+    )
+
+    assert result["ok"] is True
+    assert seen["phone_callback"] is supplied_phone_callback

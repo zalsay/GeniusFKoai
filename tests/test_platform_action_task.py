@@ -503,6 +503,61 @@ def test_get_rt_task_forwards_record_har_to_platform_action(monkeypatch):
     assert seen_params[0]["record_har"] == "true"
 
 
+def test_get_rt_task_uses_shared_phone_reuse_pool(monkeypatch):
+    from platforms.chatgpt import browser_get_rt as browser_get_rt_module
+
+    built = []
+    callbacks = []
+
+    class FakePhonePool:
+        def __init__(self):
+            self.cleaned = False
+
+        def make_callback(self, *, label=""):
+            callback = lambda: f"phone-for-{label}"
+            callbacks.append((label, callback))
+            return callback
+
+        def cleanup(self):
+            self.cleaned = True
+
+    fake_pool = FakePhonePool()
+
+    def fake_build_pool(**kwargs):
+        built.append(dict(kwargs))
+        return fake_pool, ""
+
+    class FakeRuntime:
+        def execute_action(self, command, *, log_fn=None, cancel_check=None):
+            assert callable(command.params["phone_callback"])
+            assert command.params["phone_reuse_count"] == "3"
+            return ActionExecutionResult(ok=True, data={"phone": command.params["phone_callback"]()})
+
+    monkeypatch.setattr(browser_get_rt_module, "build_get_rt_phone_reuse_pool", fake_build_pool)
+    monkeypatch.setattr(runtime_module, "PlatformRuntime", FakeRuntime)
+    logger = _FakeLogger()
+
+    tasks_module._execute_get_rt_task(
+        {
+            "ids": [101, 102, 103],
+            "browser_mode": "camoufox_headed",
+            "sms_provider": "smspool",
+            "smspool_api_key": "KEY",
+            "phone_reuse_count": 2,
+            "concurrency": 1,
+        },
+        logger,
+    )
+
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert len(built) == 1
+    assert built[0]["reuse_count"] == 3
+    assert len(callbacks) == 3
+    assert callbacks[0][0] == "1/3"
+    assert callbacks[-1][0] == "3/3"
+    assert fake_pool.cleaned is True
+
+
 def test_chatgpt_auto_plus_followup_returns_error_when_payment_link_fails(monkeypatch):
     class FakeLogger(_FakeLogger):
         def add_cashier_url(self, url):

@@ -1688,6 +1688,7 @@ export default function Accounts() {
   const [getRtSmsapiPhone, setGetRtSmsapiPhone] = useState('')
   const [getRtSmsapiUrl, setGetRtSmsapiUrl] = useState('')
   const [getRtRecordHar, setGetRtRecordHar] = useState(false)
+  const [getRtPhoneReuseCount, setGetRtPhoneReuseCount] = useState(3)
 
   useEffect(() => {
     getPlatforms().then((list: any[]) => {
@@ -1831,6 +1832,7 @@ export default function Accounts() {
           smspool_max_price: getRtSmspoolMaxPrice.trim() || '0.13',
           smsapi_phone: getRtSmsapiPhone.trim(),
           smsapi_url: getRtSmsapiUrl.trim(),
+          phone_reuse_count: Math.max(Number(getRtPhoneReuseCount || 3), 3),
         }),
       })
       setGetRtTaskId(String(data?.task_id || data?.id || ''))
@@ -2095,6 +2097,23 @@ export default function Accounts() {
                     className="control-surface control-surface-compact w-full text-center"
                   />
                 </div>
+                <div>
+                  <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                    Phone reuse count
+                  </label>
+                  <input
+                    type="number"
+                    min={3}
+                    value={getRtPhoneReuseCount}
+                    onChange={event =>
+                      setGetRtPhoneReuseCount(Math.max(Number(event.target.value || 3), 3))
+                    }
+                    className="control-surface control-surface-compact w-full text-center"
+                  />
+                  <div className="mt-1 text-[11px] text-[var(--text-muted)]">
+                    One phone is reused for at least 3 successful accounts, then the task switches to a new phone.
+                  </div>
+                </div>
                 <label className="flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
                   <input
                     type="checkbox"
@@ -2168,12 +2187,12 @@ export default function Accounts() {
                         <label className="mb-1 block text-xs text-[var(--text-muted)]">
                           手机号 + 查询 URL（支持 +1XXXXXXXX----URL 格式）
                         </label>
-                        <input
-                          type="text"
+                        <textarea
                           value={getRtSmsapiPhone}
                           onChange={e => setGetRtSmsapiPhone(e.target.value)}
-                          placeholder="+17857019646----https://xxx/api/sms/recordText?key=xxx"
-                          className="control-surface control-surface-compact w-full"
+                          rows={3}
+                          placeholder={"+17857019646----https://xxx/api/sms/recordText?key=xxx\n+17857019647----https://xxx/api/sms/recordText?key=yyy"}
+                          className="control-surface control-surface-compact w-full resize-none font-mono text-xs"
                         />
                       </div>
                       <div>
