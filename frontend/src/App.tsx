@@ -55,7 +55,7 @@ const NAV_ITEMS: NavItem[] = [
   { path: "/ctf-gpt-plus", labelKey: "nav.ctfGptPlus", icon: Sparkles },
   { path: "/gopay-gpt-plus", labelKey: "nav.gopayGptPlus", icon: Sparkles },
   { path: "/plus-manager", labelKey: "nav.plusManager", icon: Sparkles },
-  { path: "/accounts/chatgpt", label: "ChatGPT", icon: Users },
+  { path: "/accounts/chatgpt", label: "chatgpt free", icon: Users },
   { path: "/history", labelKey: "nav.tasks", icon: History },
 ];
 

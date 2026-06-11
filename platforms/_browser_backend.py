@@ -23,6 +23,7 @@ Camoufox 和 BitBrowser 两套实现之间无差别切换。
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -123,7 +124,7 @@ def parse_checkout_mode(
     mode: str,
     *,
     bit_profile_id: str = "",
-    bit_api_url: str = DEFAULT_BIT_API_URL,
+    bit_api_url: str = "",
     bit_api_token: str = "",
 ) -> BrowserBackendConfig:
     """把 UI 传过来的字符串 ``checkout_mode`` 解析成 ``BrowserBackendConfig``。
@@ -140,6 +141,12 @@ def parse_checkout_mode(
     分发了，根本不会调到这里。
     """
     normalized = str(mode or "").strip().lower()
+
+    # 未显式传 bit_api_url 时，优先读 BIT_API_URL 环境变量，再回退默认值
+    if not bit_api_url:
+        bit_api_url = os.environ.get("BIT_API_URL", "").strip() or DEFAULT_BIT_API_URL
+    if not bit_api_token:
+        bit_api_token = os.environ.get("BIT_API_TOKEN", "").strip()
 
     if normalized == "bitbrowser_headed":
         return BrowserBackendConfig.bitbrowser(

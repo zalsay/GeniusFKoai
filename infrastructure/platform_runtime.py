@@ -44,6 +44,7 @@ PERSISTED_ACTION_DATA_KEYS = {
 }
 
 STATEFUL_ACTION_IDS = {"get_account_state", "switch_account", "query_state", "switch_desktop"}
+OAUTH_RESULT_ACTION_IDS = {"get_rt"}
 CASHIER_URL_ACTION_IDS = {
     "payment_link",
     "payment_link_browser",
@@ -218,6 +219,41 @@ def _build_account_overview(platform: str, data: dict[str, Any]) -> dict[str, An
     return overview if len(overview) > 2 else None
 
 
+def _build_oauth_result_overview(platform: str, data: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(data, dict):
+        return None
+    profile = data.get("profile") if isinstance(data.get("profile"), dict) else {}
+    remote_user = data.get("remote_user") if isinstance(data.get("remote_user"), dict) else profile
+    claims = data.get("id_token_claims") if isinstance(data.get("id_token_claims"), dict) else {}
+    remote_email = str(
+        data.get("email")
+        or profile.get("email")
+        or remote_user.get("email")
+        or claims.get("email")
+        or ""
+    ).strip()
+    oauth_summary = {
+        "type": str(data.get("type") or "codex"),
+        "email": remote_email,
+        "account_id": str(data.get("account_id") or ""),
+        "expired": str(data.get("expired") or ""),
+        "last_refresh": str(data.get("last_refresh") or ""),
+        "profile": profile,
+        "id_token_claims": claims,
+    }
+    overview: dict[str, Any] = {
+        "platform": platform,
+        "checked_at": _utcnow_iso(),
+        "oauth": oauth_summary,
+        "codex_oauth": oauth_summary,
+    }
+    if remote_email:
+        overview["remote_email"] = remote_email
+    if remote_user:
+        overview["remote_user"] = remote_user
+    return overview
+
+
 class PlatformRuntime:
     def list_platforms(self) -> list[PlatformDescriptor]:
         load_all()
@@ -323,6 +359,11 @@ class PlatformRuntime:
                 summary_updates: dict[str, Any] = {}
                 if action_ok and command.action_id in STATEFUL_ACTION_IDS:
                     overview = _build_account_overview(command.platform, data)
+                    if overview:
+                        summary_updates.update(overview)
+                        needs_save = True
+                if action_ok and command.action_id in OAUTH_RESULT_ACTION_IDS:
+                    overview = _build_oauth_result_overview(command.platform, data)
                     if overview:
                         summary_updates.update(overview)
                         needs_save = True

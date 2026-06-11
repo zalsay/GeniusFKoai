@@ -13,7 +13,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { getTaskStatusText, TASK_STATUS_VARIANTS } from '@/lib/tasks'
-import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, Trash2, Zap } from 'lucide-react'
+import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, Trash2, Zap, Loader2, ShieldCheck } from 'lucide-react'
 
 const STATUS_VARIANT: Record<string, any> = {
   registered: 'default', trial: 'success', subscribed: 'success',
@@ -23,6 +23,14 @@ const STATUS_VARIANT: Record<string, any> = {
 
 const platformActionsCache = new Map<string, any[]>()
 const platformActionsPromiseCache = new Map<string, Promise<any[]>>()
+
+const BROWSER_MODE_OPTIONS = [
+  { value: 'camoufox_headed', label: 'Camoufox Headed' },
+  { value: 'camoufox_headless', label: 'Camoufox Headless' },
+  { value: 'bitbrowser_headed', label: 'BitBrowser Headed' },
+  { value: 'bitbrowser_hidden', label: 'BitBrowser Hidden' },
+  { value: 'bitbrowser_headless', label: 'BitBrowser Headless' },
+]
 
 function getAccountOverview(acc: any) {
   return acc?.overview || {}
@@ -1645,6 +1653,7 @@ export default function Accounts() {
   const [accounts, setAccounts] = useState<any[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
@@ -1659,6 +1668,23 @@ export default function Accounts() {
   const [batchRefreshing, setBatchRefreshing] = useState(false)
   const [batchTask, setBatchTask] = useState<{ taskId: string; title: string } | null>(null)
   const [batchTaskStatus, setBatchTaskStatus] = useState<string | null>(null)
+  const [browserMode, setBrowserMode] = useState('camoufox_headed')
+  const [actionConcurrency, setActionConcurrency] = useState(1)
+  const [oauthTaskId, setOauthTaskId] = useState('')
+  const [oauthBusy, setOauthBusy] = useState(false)
+  const [oauthConfirmOpen, setOauthConfirmOpen] = useState(false)
+  const [getRtTaskId, setGetRtTaskId] = useState('')
+  const [getRtBusy, setGetRtBusy] = useState(false)
+  const [getRtConfirmOpen, setGetRtConfirmOpen] = useState(false)
+  const [getRtBypassTaskId, setGetRtBypassTaskId] = useState('')
+  const [getRtBypassBusy, setGetRtBypassBusy] = useState(false)
+  const [getRtBypassConfirmOpen, setGetRtBypassConfirmOpen] = useState(false)
+  const [getRtSmsProvider, setGetRtSmsProvider] = useState('')
+  const [getRtSmspoolKey, setGetRtSmspoolKey] = useState('')
+  const [getRtSmspoolMaxPrice, setGetRtSmspoolMaxPrice] = useState('0.13')
+  const [getRtSmsapiPhone, setGetRtSmsapiPhone] = useState('')
+  const [getRtSmsapiUrl, setGetRtSmsapiUrl] = useState('')
+  const [getRtRecordHar, setGetRtRecordHar] = useState(false)
 
   useEffect(() => {
     getPlatforms().then((list: any[]) => {
@@ -1747,6 +1773,110 @@ export default function Accounts() {
   const emailApiLine = (email: string) =>
     `${email} https://hsxhome.com/api/find/openai?email=${email}&t=fzKIywnF4KEGGB_i`
 
+  const startCodexOAuth = async () => {
+    setError('')
+    const ids = [...selectedIds].map(Number)
+    if (ids.length === 0) {
+      setError('请选择至少 1 个账户进行 Codex OAuth')
+      return
+    }
+    setOauthBusy(true)
+    try {
+      const data = await apiFetch('/tasks/codex-oauth', {
+        method: 'POST',
+        body: JSON.stringify({
+          platform: 'chatgpt',
+          ids,
+          browser_mode: browserMode,
+          concurrency: Math.max(Number(actionConcurrency || 1), 1),
+        }),
+      })
+      setOauthTaskId(String(data?.task_id || data?.id || ''))
+    } catch (exc: any) {
+      setError(exc?.message || t('login.requestFailed'))
+    } finally {
+      setOauthBusy(false)
+    }
+  }
+
+  const handleOAuthTaskDone = useCallback(async () => {
+    setOauthBusy(false)
+    setSelectedIds(new Set())
+    await load()
+  }, [load])
+
+  // ── 获取rt（refresh_token）──
+  const startGetRt = async () => {
+    setError('')
+    const ids = [...selectedIds].map(Number)
+    if (ids.length === 0) {
+      setError('请选择至少 1 个账户获取 refresh_token')
+      return
+    }
+    setGetRtBusy(true)
+    try {
+      const data = await apiFetch('/tasks/get-rt', {
+        method: 'POST',
+        body: JSON.stringify({
+          platform: 'chatgpt',
+          ids,
+          browser_mode: browserMode,
+          concurrency: Math.max(Number(actionConcurrency || 1), 1),
+          record_har: getRtRecordHar ? 'true' : '',
+          sms_provider: getRtSmsProvider,
+          smspool_api_key: getRtSmspoolKey.trim(),
+          smspool_max_price: getRtSmspoolMaxPrice.trim() || '0.13',
+          smsapi_phone: getRtSmsapiPhone.trim(),
+          smsapi_url: getRtSmsapiUrl.trim(),
+        }),
+      })
+      setGetRtTaskId(String(data?.task_id || data?.id || ''))
+    } catch (exc: any) {
+      setError(exc?.message || t('login.requestFailed'))
+    } finally {
+      setGetRtBusy(false)
+    }
+  }
+
+  const handleGetRtTaskDone = useCallback(async () => {
+    setGetRtBusy(false)
+    setSelectedIds(new Set())
+    await load()
+  }, [load])
+
+  // ── 获取rt(绕过手机号) ──
+  const startGetRtBypass = async () => {
+    setError('')
+    const ids = [...selectedIds].map(Number)
+    if (ids.length === 0) {
+      setError('请选择至少 1 个账户')
+      return
+    }
+    setGetRtBypassBusy(true)
+    try {
+      const data = await apiFetch('/tasks/get-rt-bypass', {
+        method: 'POST',
+        body: JSON.stringify({
+          platform: 'chatgpt',
+          ids,
+          browser_mode: browserMode,
+          concurrency: Math.max(Number(actionConcurrency || 1), 1),
+        }),
+      })
+      setGetRtBypassTaskId(String(data?.task_id || data?.id || ''))
+    } catch (exc: any) {
+      setError(exc?.message || t('login.requestFailed'))
+    } finally {
+      setGetRtBypassBusy(false)
+    }
+  }
+
+  const handleGetRtBypassTaskDone = useCallback(async () => {
+    setGetRtBypassBusy(false)
+    setSelectedIds(new Set())
+    await load()
+  }, [load])
+
   const currentPlatformMeta = platformsMap[tab]
   const platformLabel = currentPlatformMeta?.display_name || tab
   const visibleTrial = accounts.filter(acc => getPlanState(acc) === 'trial').length
@@ -1778,6 +1908,427 @@ export default function Accounts() {
             load()
           }}
         />
+      )}
+      {oauthTaskId && (
+        createPortal(
+          <div className="dialog-backdrop" onClick={() => setOauthTaskId('')}>
+            <div
+              className="dialog-panel flex max-h-[82vh] flex-col"
+              onClick={event => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
+                <div>
+                  <h2 className="text-base font-semibold text-[var(--text-primary)]">
+                    Codex OAuth
+                  </h2>
+                  <div className="mt-1 text-xs text-[var(--text-muted)]">
+                    Task logs are shown here.
+                  </div>
+                </div>
+                <button
+                  onClick={() => setOauthTaskId('')}
+                  className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="min-h-0 flex-1 px-6 py-4">
+                <div className="h-[420px] min-h-0 rounded border border-[var(--border)] p-3">
+                  <TaskLogPanel taskId={oauthTaskId} onDone={handleOAuthTaskDone} />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 border-t border-[var(--border)] px-6 py-3">
+                <Button variant="outline" size="sm" onClick={() => setOauthTaskId('')}>
+                  {t('common.close')}
+                </Button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      )}
+      {oauthConfirmOpen && (
+        createPortal(
+          <div
+            className="dialog-backdrop"
+            onClick={() => !oauthBusy && setOauthConfirmOpen(false)}
+          >
+            <div
+              className="dialog-panel flex max-h-[82vh] flex-col"
+              onClick={event => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
+                <div>
+                  <h2 className="text-base font-semibold text-[var(--text-primary)]">
+                    Codex OAuth
+                  </h2>
+                  <div className="mt-1 text-xs text-[var(--text-muted)]">
+                    Selected {selectedIds.size} account(s). Choose browser mode and concurrency.
+                  </div>
+                </div>
+                <button
+                  onClick={() => !oauthBusy && setOauthConfirmOpen(false)}
+                  className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="space-y-4 px-6 py-4">
+                <div>
+                  <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                    Browser mode
+                  </label>
+                  <select
+                    value={browserMode}
+                    onChange={event => setBrowserMode(event.target.value)}
+                    className="control-surface control-surface-compact w-full"
+                  >
+                    {BROWSER_MODE_OPTIONS.map(option => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                    Concurrency
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={actionConcurrency}
+                    onChange={event =>
+                      setActionConcurrency(Math.max(Number(event.target.value || 1), 1))
+                    }
+                    className="control-surface control-surface-compact w-full text-center"
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 border-t border-[var(--border)] px-6 py-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setOauthConfirmOpen(false)}
+                  disabled={oauthBusy}
+                >
+                  {t('common.close')}
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={async () => {
+                    setOauthConfirmOpen(false)
+                    await startCodexOAuth()
+                  }}
+                  disabled={oauthBusy || selectedIds.size === 0}
+                >
+                  {oauthBusy ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="mr-2 h-4 w-4" />
+                  )}
+                  Start
+                </Button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      )}
+      {getRtConfirmOpen && (
+        createPortal(
+          <div
+            className="dialog-backdrop"
+            onClick={() => !getRtBusy && setGetRtConfirmOpen(false)}
+          >
+            <div
+              className="dialog-panel flex max-h-[82vh] flex-col"
+              onClick={event => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
+                <div>
+                  <h2 className="text-base font-semibold text-[var(--text-primary)]">
+                    获取rt（refresh_token）
+                  </h2>
+                  <div className="mt-1 text-xs text-[var(--text-muted)]">
+                    已选 {selectedIds.size} 个账户。使用浏览器 OAuth + 手机验证跳过获取 refresh_token。
+                  </div>
+                </div>
+                <button
+                  onClick={() => !getRtBusy && setGetRtConfirmOpen(false)}
+                  className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="space-y-4 px-6 py-4">
+                <div>
+                  <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                    Browser mode
+                  </label>
+                  <select
+                    value={browserMode}
+                    onChange={event => setBrowserMode(event.target.value)}
+                    className="control-surface control-surface-compact w-full"
+                  >
+                    {BROWSER_MODE_OPTIONS.map(option => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                    Concurrency
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={actionConcurrency}
+                    onChange={event =>
+                      setActionConcurrency(Math.max(Number(event.target.value || 1), 1))
+                    }
+                    className="control-surface control-surface-compact w-full text-center"
+                  />
+                </div>
+                <label className="flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
+                  <input
+                    type="checkbox"
+                    checked={getRtRecordHar}
+                    onChange={event => setGetRtRecordHar(event.target.checked)}
+                    className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]"
+                  />
+                  <div className="flex-1 text-xs text-[var(--text-secondary)]">
+                    <div className="text-sm font-medium text-[var(--text-primary)]">
+                      Capture Camoufox HAR
+                    </div>
+                    <div className="mt-0.5">
+                      Saves the OAuth browser network log to tools/captures. Use camoufox_headed or camoufox_headless.
+                    </div>
+                    {getRtRecordHar && !browserMode.startsWith('camoufox_') ? (
+                      <div className="mt-2 text-[11px] text-amber-400">
+                        Current browser mode does not support HAR recording. Switch to Camoufox to write a HAR file.
+                      </div>
+                    ) : null}
+                  </div>
+                </label>
+                {/* ── 手机号接码（可选）── */}
+                <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 space-y-3">
+                  <div className="text-sm font-medium text-[var(--text-primary)]">手机号接码（可选，跳过则遇到 add_phone 会失败）</div>
+                  <div>
+                    <label className="mb-1 block text-xs text-[var(--text-muted)]">接码渠道</label>
+                    <select
+                      value={getRtSmsProvider}
+                      onChange={e => setGetRtSmsProvider(e.target.value)}
+                      className="control-surface control-surface-compact w-full"
+                    >
+                      <option value="">(不启用)</option>
+                      <option value="smspool">SMSPool</option>
+                      <option value="smsapi">SmsApi（自有固定号）</option>
+                    </select>
+                  </div>
+                  {getRtSmsProvider === 'smspool' && (
+                    <>
+                      <div>
+                        <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                          SMSPool API Key（留空用内置默认 key）
+                        </label>
+                        <input
+                          type="text"
+                          value={getRtSmspoolKey}
+                          onChange={e => setGetRtSmspoolKey(e.target.value)}
+                          placeholder="SMSPool API key"
+                          className="control-surface control-surface-compact w-full"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                          价格上限 USD（默认 0.13）
+                        </label>
+                        <input
+                          type="text"
+                          value={getRtSmspoolMaxPrice}
+                          onChange={e => setGetRtSmspoolMaxPrice(e.target.value.replace(/[^0-9.]/g, ''))}
+                          placeholder="0.13"
+                          className="control-surface control-surface-compact w-full text-center font-mono"
+                        />
+                      </div>
+                      <div className="text-[11px] text-[var(--text-muted)]">
+                        租美国号（country=1），OpenAI/ChatGPT service=671
+                      </div>
+                    </>
+                  )}
+                  {getRtSmsProvider === 'smsapi' && (
+                    <>
+                      <div>
+                        <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                          手机号 + 查询 URL（支持 +1XXXXXXXX----URL 格式）
+                        </label>
+                        <input
+                          type="text"
+                          value={getRtSmsapiPhone}
+                          onChange={e => setGetRtSmsapiPhone(e.target.value)}
+                          placeholder="+17857019646----https://xxx/api/sms/recordText?key=xxx"
+                          className="control-surface control-surface-compact w-full"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                          查询 URL（与手机号分开填写时用；上面的手机号字段已含 ----URL 则无需填写）
+                        </label>
+                        <input
+                          type="text"
+                          value={getRtSmsapiUrl}
+                          onChange={e => setGetRtSmsapiUrl(e.target.value)}
+                          placeholder="https://mail-api.yuecheng.shop/api/sms/recordText?key=xxx"
+                          className="control-surface control-surface-compact w-full"
+                        />
+                      </div>
+                    </>
+                  )}
+                  <div className="text-[11px] text-[var(--text-muted)]">
+                    浏览器填表时自动去除 +1 区号，使用本地号码格式。
+                  </div>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 border-t border-[var(--border)] px-6 py-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setGetRtConfirmOpen(false)}
+                  disabled={getRtBusy}
+                >
+                  {t('common.close')}
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={async () => {
+                    setGetRtConfirmOpen(false)
+                    await startGetRt()
+                  }}
+                  disabled={getRtBusy || selectedIds.size === 0}
+                >
+                  {getRtBusy ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Zap className="mr-2 h-4 w-4" />
+                  )}
+                  开始获取
+                </Button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      )}
+      {getRtTaskId && (
+        createPortal(
+          <div className="dialog-backdrop" onClick={() => setGetRtTaskId('')}>
+            <div
+              className="dialog-panel flex max-h-[82vh] flex-col"
+              onClick={event => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
+                <div>
+                  <h2 className="text-base font-semibold text-[var(--text-primary)]">
+                    获取rt
+                  </h2>
+                  <div className="mt-1 text-xs text-[var(--text-muted)]">
+                    Task logs are shown here.
+                  </div>
+                </div>
+                <button
+                  onClick={() => setGetRtTaskId('')}
+                  className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="min-h-0 flex-1 px-6 py-4">
+                <div className="h-[420px] min-h-0 rounded border border-[var(--border)] p-3">
+                  <TaskLogPanel taskId={getRtTaskId} onDone={handleGetRtTaskDone} />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 border-t border-[var(--border)] px-6 py-3">
+                <Button variant="outline" size="sm" onClick={() => setGetRtTaskId('')}>
+                  {t('common.close')}
+                </Button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      )}
+      {/* ── 获取rt(绕过) 确认弹窗 ── */}
+      {getRtBypassConfirmOpen && (
+        createPortal(
+          <div className="dialog-backdrop" onClick={() => !getRtBypassBusy && setGetRtBypassConfirmOpen(false)}>
+            <div className="dialog-panel flex max-h-[82vh] flex-col" onClick={event => event.stopPropagation()}>
+              <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
+                <div>
+                  <h2 className="text-base font-semibold text-[var(--text-primary)]">获取rt（绕过手机号）</h2>
+                  <div className="mt-1 text-xs text-[var(--text-muted)]">
+                    已选 {selectedIds.size} 个账户。拦截 session/select 跳过手机验证。
+                  </div>
+                </div>
+                <button onClick={() => !getRtBypassBusy && setGetRtBypassConfirmOpen(false)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
+              </div>
+              <div className="space-y-4 px-6 py-4">
+                <div>
+                  <label className="mb-1 block text-xs text-[var(--text-muted)]">Browser mode</label>
+                  <select value={browserMode} onChange={event => setBrowserMode(event.target.value)} className="control-surface control-surface-compact w-full">
+                    {BROWSER_MODE_OPTIONS.map(option => (<option key={option.value} value={option.value}>{option.label}</option>))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-[var(--text-muted)]">Concurrency</label>
+                  <input type="number" min={1} value={actionConcurrency}
+                    onChange={event => setActionConcurrency(Math.max(Number(event.target.value || 1), 1))}
+                    className="control-surface control-surface-compact w-full text-center" />
+                </div>
+                <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 text-xs text-[var(--text-secondary)]">
+                  拦截 POST session/select 响应，将 phone_otp_* 替换为 consent 类型，浏览器直接跳授权同意页。
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 border-t border-[var(--border)] px-6 py-3">
+                <Button variant="outline" size="sm" onClick={() => setGetRtBypassConfirmOpen(false)} disabled={getRtBypassBusy}>{t('common.close')}</Button>
+                <Button size="sm" onClick={async () => { setGetRtBypassConfirmOpen(false); await startGetRtBypass() }} disabled={getRtBypassBusy || selectedIds.size === 0}>
+                  {getRtBypassBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
+                  开始
+                </Button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      )}
+      {/* ── 获取rt(绕过) 任务日志 ── */}
+      {getRtBypassTaskId && (
+        createPortal(
+          <div className="dialog-backdrop" onClick={() => setGetRtBypassTaskId('')}>
+            <div className="dialog-panel flex max-h-[82vh] flex-col" onClick={event => event.stopPropagation()}>
+              <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
+                <div><h2 className="text-base font-semibold text-[var(--text-primary)]">获取rt(绕过)</h2><div className="mt-1 text-xs text-[var(--text-muted)]">Task logs</div></div>
+                <button onClick={() => setGetRtBypassTaskId('')} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
+              </div>
+              <div className="min-h-0 flex-1 px-6 py-4">
+                <div className="h-[420px] min-h-0 rounded border border-[var(--border)] p-3">
+                  <TaskLogPanel taskId={getRtBypassTaskId} onDone={handleGetRtBypassTaskDone} />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 border-t border-[var(--border)] px-6 py-3">
+                <Button variant="outline" size="sm" onClick={() => setGetRtBypassTaskId('')}>{t('common.close')}</Button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      )}
+      {error && (
+        <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+          {error}
+        </div>
       )}
 
       <Card className="shrink-0 bg-[var(--bg-pane)]/40 border border-[var(--border)] shadow-sm">
@@ -1818,6 +2369,75 @@ export default function Accounts() {
               <Button size="sm" variant="outline" onClick={exportCsv} disabled={accounts.length === 0} className="h-8 bg-transparent">
                 <Download className="mr-1.5 h-3.5 w-3.5" />
                 {t('accounts.export')}
+              </Button>
+            )}
+            {tab === 'chatgpt' && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setError('')
+                  if (selectedIds.size === 0) {
+                    setError('请选择至少 1 个账户进行 Codex OAuth')
+                    return
+                  }
+                  setOauthConfirmOpen(true)
+                }}
+                disabled={oauthBusy || selectedCount === 0}
+                className="h-8 bg-transparent"
+              >
+                {oauthBusy ? (
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
+                )}
+                Codex OAuth
+              </Button>
+            )}
+            {tab === 'chatgpt' && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setError('')
+                  if (selectedIds.size === 0) {
+                    setError('请选择至少 1 个账户获取 refresh_token')
+                    return
+                  }
+                  setGetRtConfirmOpen(true)
+                }}
+                disabled={getRtBusy || selectedCount === 0}
+                className="h-8 bg-transparent"
+              >
+                {getRtBusy ? (
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Zap className="mr-1.5 h-3.5 w-3.5" />
+                )}
+                获取rt
+              </Button>
+            )}
+            {tab === 'chatgpt' && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setError('')
+                  if (selectedIds.size === 0) {
+                    setError('请选择至少 1 个账户')
+                    return
+                  }
+                  setGetRtBypassConfirmOpen(true)
+                }}
+                disabled={getRtBypassBusy || selectedCount === 0}
+                className="h-8 bg-transparent"
+              >
+                {getRtBypassBusy ? (
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
+                )}
+                获取rt(绕过)
               </Button>
             )}
             <Button size="sm" variant="outline" onClick={() => setShowAdd(true)} className="h-8 bg-transparent">

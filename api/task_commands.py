@@ -144,6 +144,38 @@ def create_codex_oauth_task(body: CodexOAuthTaskRequest):
     return command_service.create_codex_oauth_task(body.model_dump())
 
 
+class GetRtTaskRequest(BaseModel):
+    platform: str = "chatgpt"
+    account_id: int = 0
+    ids: list[int] = Field(default_factory=list)
+    browser_mode: str = "camoufox_headed"
+    concurrency: int = 1
+    record_har: str = ""
+    sms_provider: str = ""
+    smspool_api_key: str = ""
+    smspool_max_price: str = "0.13"
+    smsapi_phone: str = ""
+    smsapi_url: str = ""
+
+
+@router.post("/get-rt")
+def create_get_rt_task(body: GetRtTaskRequest):
+    return command_service.create_get_rt_task(body.model_dump())
+
+
+class GetRtBypassTaskRequest(BaseModel):
+    platform: str = "chatgpt"
+    account_id: int = 0
+    ids: list[int] = Field(default_factory=list)
+    browser_mode: str = "camoufox_headed"
+    concurrency: int = 1
+
+
+@router.post("/get-rt-bypass")
+def create_get_rt_bypass_task(body: GetRtBypassTaskRequest):
+    return command_service.create_get_rt_bypass_task(body.model_dump())
+
+
 @router.post("/gopay-pay-chatgpt")
 def create_gopay_pay_chatgpt_task(body: GoPayPayChatGptTaskRequest):
     return command_service.create_gopay_pay_chatgpt_task(body.model_dump())

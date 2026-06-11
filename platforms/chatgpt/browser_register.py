@@ -1030,18 +1030,9 @@ def _submit_add_phone_dom(
                 }
               }
 
-              const select = form.querySelector('select');
-              if (select) {
-                const options = Array.from(select.options || []);
-                const target = options.find((option) => String(option.value || '').toUpperCase() === String(payload.isoCode || '').toUpperCase())
-                  || options.find((option) => normalize(option.textContent).toLowerCase().includes(String(payload.countryLabel || '').toLowerCase()))
-                  || options.find((option) => normalize(option.textContent).includes(`+${payload.dialCode}`));
-                if (target) {
-                  select.value = target.value;
-                  dispatchInputEvents(select);
-                  await sleep(120);
-                }
-              }
+              // ★ 跳过国家选择器：OpenAI 使用 React Aria 自定义组件（非原生 select），
+              // 触碰隐藏的 a11y <select> 会触发下拉浮层弹出遮挡提交按钮。
+              // 默认国家已是美国 (+1)，无需切换。
 
               const phoneInput = form.querySelector('input[type="tel"], input[name="__reservedForPhoneNumberInput_tel"], input[autocomplete="tel"]');
               if (!phoneInput) return { ok: false, reason: 'missing_phone_input', url: location.href };
@@ -2380,6 +2371,50 @@ def _submit_callback_result(callback_url: str, oauth_start, proxy: str | None) -
     return json.loads(result_json)
 
 
+def _wait_for_oauth_callback_result(
+    page,
+    oauth_start,
+    proxy: str | None,
+    log,
+    *,
+    timeout_sec: int = 90,
+) -> dict | None:
+    """Wait for the browser to land on the localhost OAuth callback and exchange it."""
+    deadline = time.time() + max(int(timeout_sec or 0), 1)
+    seen_urls: set[str] = set()
+
+    while time.time() < deadline:
+        candidates: list[str] = []
+        try:
+            candidates.append(str(page.url or ""))
+        except Exception:
+            pass
+        try:
+            location_href = str(page.evaluate("() => location.href") or "")
+            if location_href:
+                candidates.append(location_href)
+        except Exception:
+            pass
+
+        for url in candidates:
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            if "localhost" in url or "code=" in url:
+                log(f"  OAuth callback wait 检测到 URL: {url[:160]}")
+            if not _extract_code_from_url(url):
+                continue
+            try:
+                result = _submit_callback_result(url, oauth_start, proxy)
+                log("  OAuth callback 已换取 token")
+                return result
+            except Exception as exc:
+                log(f"  OAuth callback token exchange 失败: {exc}")
+                return {"error": f"OAuth callback token exchange 失败: {exc}"}
+        time.sleep(0.8)
+    return None
+
+
 def _extract_callback_url_from_exception(exc: Exception) -> str:
     text = str(exc or "")
     if not text:
@@ -2483,16 +2518,33 @@ def _submit_login_email_via_page(page, email: str, log) -> dict:
     return {"ok": False, "status": 0, "url": last_url, "data": None, "text": last_text or "OAuth 邮箱页提交后未跳转"}
 
 
-def _do_codex_oauth(page, cookies_dict: dict, email: str, password: str, otp_callback, phone_callback, proxy: str | None, log) -> dict | None:
-    """在真实浏览器会话内完成 Codex OAuth，返回完整 token 包。"""
+def _do_codex_oauth(
+    page,
+    cookies_dict: dict,
+    email: str,
+    password: str,
+    otp_callback,
+    phone_callback,
+    proxy: str | None,
+    log,
+    *,
+    allow_add_phone_retry: bool = True,
+    oauth_start=None,
+) -> dict | None:
+    """在真实浏览器会话内完成 Codex OAuth，返回完整 token 包。
+
+    如果传入 ``oauth_start``，则使用预生成的 OAuth 参数（重用 state/code_verifier），
+    这样外层可以用同一 code_verifier 完成 token 交换（fallback 场景）。
+    """
     from .oauth import generate_oauth_url
     from .constants import CODEX_CLIENT_ID, CODEX_REDIRECT_URI, CODEX_SCOPE
 
-    oauth_start = generate_oauth_url(
-        redirect_uri=CODEX_REDIRECT_URI,
-        scope=CODEX_SCOPE,
-        client_id=CODEX_CLIENT_ID,
-    )
+    if oauth_start is None:
+        oauth_start = generate_oauth_url(
+            redirect_uri=CODEX_REDIRECT_URI,
+            scope=CODEX_SCOPE,
+            client_id=CODEX_CLIENT_ID,
+        )
     try:
         user_agent = str(page.evaluate("() => navigator.userAgent") or "").strip() or _random_chrome_ua()
     except Exception:
@@ -2602,10 +2654,32 @@ def _do_codex_oauth(page, cookies_dict: dict, email: str, password: str, otp_cal
                             device_id=device_id, user_agent=user_agent,
                             log=log, resume_url=oauth_start.auth_url,
                         )
+                        callback_result = _wait_for_oauth_callback_result(
+                            page,
+                            oauth_start,
+                            proxy,
+                            log,
+                            timeout_sec=45,
+                        )
+                        if callback_result:
+                            return callback_result
                         continue
                     except Exception as exc:
                         log(f"  短信验证失败，停止 OAuth 流程: {exc}")
                         return None
+
+                if not allow_add_phone_retry:
+                    log("  OAuth 检测到 add_phone，等待手动完成手机号验证并跳转 callback...")
+                    callback_result = _wait_for_oauth_callback_result(
+                        page,
+                        oauth_start,
+                        proxy,
+                        log,
+                        timeout_sec=180,
+                    )
+                    if callback_result:
+                        return callback_result
+                    return {"error": "OpenAI OAuth 要求手机号验证，等待后未捕获 callback URL"}
 
                 # 先尝试跳过 add_phone，直接重新访问 OAuth 授权 URL
                 # 用户已登录，重新访问 auth URL 应该能直接跳到 callback

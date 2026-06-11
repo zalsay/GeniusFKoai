@@ -75,6 +75,16 @@ def _build_checkout_har_path(email: str) -> str:
     return os.path.join(capture_dir, f"checkout-{timestamp}-{slug}.har")
 
 
+def _build_get_rt_har_path(email: str) -> str:
+    """Build a HAR output path for get_rt Camoufox OAuth captures."""
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    capture_dir = os.path.join(project_root, "tools", "captures")
+    os.makedirs(capture_dir, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    slug = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(email or "anon")).strip("_") or "anon"
+    return os.path.join(capture_dir, f"get-rt-{timestamp}-{slug}.har")
+
+
 def _run_sync_checkout_isolated(checkout_fn, **kwargs):
     """把 checkout 函数丢进独立线程跑，避免阻塞外层 asyncio loop / 任务线程。
 
@@ -378,6 +388,16 @@ class ChatGPTPlatform(BasePlatform):
             {"id": "switch_account", "label": "切换到 Codex 桌面端", "params": []},
             {"id": "get_account_state", "label": "查询账号状态/订阅", "params": []},
             {"id": "refresh_token", "label": "刷新 Token", "params": []},
+            {"id": "get_rt", "label": "获取rt",
+             "params": [
+                 {"key": "browser_mode", "label": "浏览器模式", "type": "select",
+                  "options": ["camoufox_headed", "camoufox_headless"]},
+             ]},
+            {"id": "get_rt_bypass", "label": "获取rt(绕过手机号)",
+             "params": [
+                 {"key": "browser_mode", "label": "浏览器模式", "type": "select",
+                  "options": ["camoufox_headed", "camoufox_headless"]},
+             ]},
             {"id": "payment_link", "label": "打开支付链接",
              "params": [
                  {"key": "country", "label": "地区", "type": "select",
@@ -443,6 +463,10 @@ class ChatGPTPlatform(BasePlatform):
     def execute_action(self, action_id: str, account: Account, params: dict) -> dict:
         if action_id == "payment_link":
             return self._handle_generate_link(account, params)
+        if action_id == "get_rt":
+            return self._handle_get_rt(account, params)
+        if action_id == "get_rt_bypass":
+            return self._handle_get_rt_bypass(account, params)
         return super().execute_action(action_id, account, params)
 
     def _execute_platform_action(self, action_id: str, account: Account, params: dict) -> dict:
@@ -582,6 +606,580 @@ class ChatGPTPlatform(BasePlatform):
                 pass
             return {"ok": True, "data": data}
         return {"ok": False, "error": result.error_message}
+
+    def _build_get_rt_mailbox_otp_callback(self, account: Account, log_fn, proxy: str | None):
+        """Build an OTP callback from the mailbox resource attached to account."""
+        from core.base_mailbox import MailboxAccount, create_mailbox
+
+        def _text(value) -> str:
+            return str(value or "").strip()
+
+        def _safe_dict(value) -> dict:
+            return dict(value) if isinstance(value, dict) else {}
+
+        def _safe_list(value) -> list:
+            return list(value) if isinstance(value, (list, tuple)) else []
+
+        def _mailbox_provider_key(value: str, metadata: dict | None = None) -> str:
+            raw = _text(value)
+            api_mode = _text((metadata or {}).get("api_mode")).lower()
+            if raw in {"cloud_mail", "cfworker"} or api_mode in {"cloud_mail", "cfworker"}:
+                return "cfworker_admin_api"
+            return raw
+
+        def _apply_provider_compat_settings(provider_key: str, runtime_extra: dict, metadata: dict) -> None:
+            if provider_key == "cfworker_admin_api":
+                if metadata.get("api_url") and not runtime_extra.get("cfworker_api_url"):
+                    runtime_extra["cfworker_api_url"] = metadata.get("api_url")
+                if metadata.get("domain") and not runtime_extra.get("cfworker_domain"):
+                    runtime_extra["cfworker_domain"] = metadata.get("domain")
+                token = (
+                    metadata.get("admin_token")
+                    or metadata.get("public_token")
+                    or metadata.get("api_token")
+                    or metadata.get("token")
+                )
+                if token and not runtime_extra.get("cfworker_admin_token"):
+                    runtime_extra["cfworker_admin_token"] = token
+
+        extra = _safe_dict(account.extra)
+        resources = [dict(item) for item in _safe_list(extra.get("provider_resources")) if isinstance(item, dict)]
+        mailbox_resources = []
+        for item in resources:
+            if _text(item.get("resource_type") or "mailbox").lower() == "mailbox":
+                mailbox_resources.append(item)
+
+        if not mailbox_resources:
+            mailbox = _safe_dict(extra.get("verification_mailbox"))
+            if not mailbox:
+                mailbox = _safe_dict(_safe_dict(extra.get("identity")).get("mailbox"))
+            if mailbox:
+                mailbox_resources.append({
+                    "provider_type": "mailbox",
+                    "provider_name": mailbox.get("provider"),
+                    "resource_type": "mailbox",
+                    "resource_identifier": mailbox.get("account_id"),
+                    "handle": mailbox.get("email"),
+                    "display_name": mailbox.get("email"),
+                    "metadata": {
+                        "account_id": mailbox.get("account_id"),
+                        "email": mailbox.get("email"),
+                    },
+                })
+
+        if not mailbox_resources:
+            return None, "账号没有绑定邮箱 provider 资源，无法自动读取真实邮箱 OTP"
+
+        provider_accounts = [
+            dict(item) for item in _safe_list(extra.get("provider_accounts")) if isinstance(item, dict)
+        ]
+        last_error = ""
+        selected_provider_name = ""
+        selected_mailbox_email = ""
+        mailbox = None
+        mailbox_account = None
+
+        for mailbox_resource in mailbox_resources:
+            metadata = _safe_dict(mailbox_resource.get("metadata"))
+            raw_provider_name = _text(mailbox_resource.get("provider_name") or mailbox_resource.get("provider"))
+            provider_name = _mailbox_provider_key(raw_provider_name, metadata)
+            mailbox_email = _text(
+                mailbox_resource.get("handle")
+                or mailbox_resource.get("display_name")
+                or metadata.get("email")
+                or account.email
+            )
+            account_id = _text(
+                mailbox_resource.get("resource_identifier")
+                or metadata.get("account_id")
+                or metadata.get("id")
+                or mailbox_email
+            )
+
+            if not provider_name:
+                last_error = "账号邮箱资源缺少 provider_name"
+                continue
+            if not mailbox_email:
+                last_error = "账号邮箱资源缺少 email"
+                continue
+
+            accepted_providers = {provider_name, raw_provider_name}
+            if provider_name == "cfworker_admin_api":
+                accepted_providers.update({"cloud_mail", "cfworker"})
+            accepted_providers = {item for item in accepted_providers if item}
+
+            same_provider_account = None
+            matched_provider_account = None
+            email_lc = mailbox_email.lower()
+            account_id_lc = account_id.lower()
+            for item in provider_accounts:
+                item_provider = _mailbox_provider_key(
+                    _text(item.get("provider_name") or item.get("provider")),
+                    _safe_dict(item.get("metadata")),
+                )
+                raw_item_provider = _text(item.get("provider_name") or item.get("provider"))
+                if (item_provider or raw_item_provider) and not ({item_provider, raw_item_provider} & accepted_providers):
+                    continue
+                if same_provider_account is None:
+                    same_provider_account = item
+                item_metadata = _safe_dict(item.get("metadata"))
+                item_credentials = _safe_dict(item.get("credentials"))
+                candidates = {
+                    _text(item.get("login_identifier")).lower(),
+                    _text(item.get("display_name")).lower(),
+                    _text(item_metadata.get("email")).lower(),
+                    _text(item_metadata.get("account_id")).lower(),
+                    _text(item_credentials.get("email")).lower(),
+                    _text(item_credentials.get("login_account")).lower(),
+                    _text(item.get("id")).lower(),
+                }
+                if email_lc in candidates or (account_id_lc and account_id_lc in candidates):
+                    matched_provider_account = item
+                    break
+
+            provider_account = matched_provider_account or same_provider_account
+            runtime_extra = dict(metadata)
+            _apply_provider_compat_settings(provider_name, runtime_extra, metadata)
+            runtime_extra["provider_resource"] = mailbox_resource
+            if provider_account:
+                runtime_extra["provider_account"] = provider_account
+
+            mailbox_account_extra = dict(runtime_extra)
+            mailbox_account_extra["mailbox_provider_key"] = provider_name
+            mailbox_account = MailboxAccount(
+                email=mailbox_email,
+                account_id=account_id,
+                extra=mailbox_account_extra,
+            )
+            try:
+                mailbox = create_mailbox(provider_name, extra=runtime_extra, proxy=proxy)
+            except Exception as exc:
+                last_error = f"{raw_provider_name or provider_name} -> {provider_name}: {exc}"
+                log_fn(f"  获取rt: 跳过不可用邮箱资源 {last_error}")
+                mailbox = None
+                mailbox_account = None
+                continue
+            selected_provider_name = provider_name
+            selected_mailbox_email = mailbox_email
+            if raw_provider_name and raw_provider_name != provider_name:
+                log_fn(f"  获取rt: 邮箱 provider 兼容映射 {raw_provider_name} -> {provider_name}")
+            break
+
+        if mailbox is None or mailbox_account is None:
+            return None, f"无法初始化账号邮箱 provider: {last_error or '没有可用邮箱资源'}"
+
+        before_ids = set()
+        try:
+            before_ids = set(mailbox.get_current_ids(mailbox_account) or set())
+            log_fn(
+                f"  获取rt: 邮箱 OTP 基线已读取 provider={selected_provider_name} "
+                f"email={selected_mailbox_email} before_ids={len(before_ids)}"
+            )
+        except Exception as exc:
+            log_fn(f"  获取rt: 邮箱 OTP 基线读取失败，继续等待新验证码: {exc}")
+
+        def _otp_callback():
+            log_fn(f"  获取rt: 等待真实邮箱 OTP provider={selected_provider_name} email={selected_mailbox_email}")
+            return mailbox.wait_for_code(
+                mailbox_account,
+                keyword="",
+                timeout=600,
+                before_ids=before_ids or None,
+            )
+
+        return _otp_callback, ""
+
+    def _handle_get_rt(self, account: Account, params: dict) -> dict:
+        """通过浏览器 OAuth 获取 refresh_token（真实邮箱 OTP + 真实手机号 OTP）。
+
+        参数：
+          browser_mode: 浏览器模式
+          sms_provider: 手机接码渠道（smspool / smsapi，空=不启用手机验证）
+          smspool_api_key: SMSPool API key
+          smspool_max_price: SMSPool 价格上限 USD
+          smsapi_phone: smsapi 固定手机号
+          smsapi_url: smsapi 查询短信 API URL
+        """
+        log_fn = getattr(self, "log", print)
+        cancel_fn = getattr(self, "_cancel_check_fn", None)
+
+        browser_mode = str(params.get("browser_mode") or "camoufox_headed")
+        record_har = _bool_param(params, "record_har", False)
+        proxy = self.config.proxy if self.config else None
+
+        if not account.password:
+            return {"ok": False, "error": "账号缺少密码，无法进行 OAuth 登录"}
+
+        acquired_profile_id = ""
+        bit_profile_id = ""
+
+        try:
+            from platforms._browser_backend import parse_checkout_mode
+            from platforms.chatgpt.browser_register import (
+                ChatGPTBrowserRegister,
+                _build_proxy_config,
+                _do_codex_oauth,
+            )
+            from platforms.chatgpt.browser_get_rt import (
+                setup_oauth_state_capture,
+                build_get_rt_phone_callback,
+            )
+
+            # ★ BitBrowser 模式：自动从 Profile 池获取可用的 profile ID
+            if str(browser_mode or "").startswith("bitbrowser_"):
+                from application.bitbrowser_profiles import (
+                    acquire_profile_for_browser_mode,
+                )
+                bit_profile_id, acquired_profile_id = acquire_profile_for_browser_mode(
+                    browser_mode,
+                    fallback=bit_profile_id,
+                    log_fn=log_fn,
+                )
+
+            backend_config = parse_checkout_mode(browser_mode, bit_profile_id=bit_profile_id)
+            record_har_path = _build_get_rt_har_path(account.email) if record_har else None
+            if record_har and not backend_config.is_camoufox:
+                log_fn(
+                    f"  get_rt HAR capture skipped: browser_mode={browser_mode} "
+                    "does not support Playwright record_har_path"
+                )
+                record_har_path = None
+            otp_callback, otp_error = self._build_get_rt_mailbox_otp_callback(account, log_fn, proxy)
+            if not otp_callback:
+                return {"ok": False, "error": f"获取rt失败: {otp_error}"}
+
+            # ★ 手机号 OTP 回调（可选）
+            phone_callback = None
+            sms_provider = str(params.get("sms_provider") or "").strip().lower()
+            if sms_provider:
+                phone_callback, phone_error = build_get_rt_phone_callback(
+                    sms_provider=sms_provider,
+                    smspool_api_key=str(params.get("smspool_api_key") or ""),
+                    smspool_max_price=str(params.get("smspool_max_price") or "0.13"),
+                    smsapi_phone=str(params.get("smsapi_phone") or ""),
+                    smsapi_url=str(params.get("smsapi_url") or ""),
+                    log_fn=log_fn,
+                )
+                if not phone_callback:
+                    log_fn(f"  获取rt: 手机 OTP 回调创建失败: {phone_error}，继续仅邮箱流程")
+                else:
+                    log_fn(f"  获取rt: 手机 OTP 已就绪 provider={sms_provider}")
+
+            log_fn(f"获取rt: {account.email}, browser_mode={browser_mode}, sms={sms_provider or '(无)'}")
+
+            # 创建一个只用于 get_rt 的轻量 register 实例
+            reg = ChatGPTBrowserRegister(
+                headless=backend_config.is_headless,
+                proxy=proxy,
+                log_fn=log_fn,
+                backend_config=backend_config,
+            )
+
+            if reg.backend_config.is_bitbrowser:
+                launch_opts = {"headless": reg.backend_config.is_headless}
+            else:
+                cam_proxy = _build_proxy_config(reg.proxy)
+                launch_opts = {"headless": reg.headless}
+                if cam_proxy:
+                    launch_opts["proxy"] = cam_proxy
+
+            with reg._open_browser(launch_opts) as browser:
+                har_context = None
+                if record_har_path:
+                    try:
+                        os.makedirs(os.path.dirname(record_har_path), exist_ok=True)
+                        har_context = browser.new_context(
+                            record_har_path=record_har_path,
+                            record_har_url_filter="**/*",
+                        )
+                        page = har_context.new_page()
+                        log_fn(f"  get_rt HAR capture enabled: {record_har_path}")
+                    except Exception as exc:
+                        log_fn(f"  get_rt HAR capture init failed, continue without HAR: {exc}")
+                        record_har_path = None
+                        har_context = None
+                        page = browser.new_page()
+                else:
+                    page = browser.new_page()
+
+                try:
+                    setup_oauth_state_capture(page, log=log_fn)
+                    log_fn("  获取rt: 浏览器已打开，开始 OAuth...")
+
+                    if callable(cancel_fn) and cancel_fn():
+                        return {"ok": False, "error": "任务已取消"}
+
+                    result = _do_codex_oauth(
+                        page, {}, account.email, account.password,
+                        otp_callback,
+                        phone_callback,
+                        proxy, log_fn,
+                    )
+
+                    if not isinstance(result, dict) or not result.get("access_token"):
+                        error_detail = "OAuth 未返回 token"
+                        if isinstance(result, dict):
+                            error_detail = str(result.get("error") or result.get("detail") or error_detail)
+                        return {"ok": False, "error": f"获取rt失败: {error_detail}"}
+
+                    refresh_token = str(result.get("refresh_token") or "")
+                    access_token = str(result.get("access_token") or "")
+                    log_fn(
+                        f"  获取rt成功: {account.email}"
+                        f" access_token={access_token[:20]}..."
+                        f" refresh_token={'有' if refresh_token else '无'}"
+                    )
+
+                    return {
+                        "ok": True,
+                        "data": {
+                            "access_token": access_token,
+                            "refresh_token": refresh_token,
+                            "id_token": str(result.get("id_token") or ""),
+                            "account_id": str(result.get("account_id") or ""),
+                            "email": account.email,
+                            "record_har_path": record_har_path or "",
+                            "message": "refresh_token 获取成功" if refresh_token else "access_token 获取成功（无 refresh_token）",
+                        },
+                    }
+                finally:
+                    if har_context is not None:
+                        try:
+                            har_context.close()
+                            log_fn(f"  get_rt HAR saved: {record_har_path}")
+                        except Exception as exc:
+                            log_fn(f"  get_rt HAR context close failed: {exc}")
+
+        except Exception as exc:
+            log_fn(f"  获取rt异常: {exc}")
+            return {"ok": False, "error": f"获取rt异常: {exc}"}
+        finally:
+            if acquired_profile_id:
+                try:
+                    from application.bitbrowser_profiles import release_acquired_profile
+                    release_acquired_profile(acquired_profile_id, log_fn=log_fn)
+                except Exception:
+                    pass
+
+    def _handle_get_rt_bypass(self, account: Account, params: dict) -> dict:
+        """通过浏览器 OAuth 获取 refresh_token（session/select 拦截绕过手机验证）。
+
+        与 _handle_get_rt 的区别：
+          - 不接真实手机号，不调 smspool/smsapi
+          - 用 Playwright route 拦截 POST session/select 响应，
+            把 phone_otp_* 替换为 consent 类型，让浏览器直接跳 consent
+          - 邮箱 OTP 仍需真实接码
+
+        参数：
+          browser_mode: 浏览器模式
+        """
+        log_fn = getattr(self, "log", print)
+        cancel_fn = getattr(self, "_cancel_check_fn", None)
+
+        browser_mode = str(params.get("browser_mode") or "camoufox_headed")
+        proxy = self.config.proxy if self.config else None
+
+        if not account.password:
+            return {"ok": False, "error": "账号缺少密码，无法进行 OAuth 登录"}
+
+        acquired_profile_id = ""
+        bit_profile_id = ""
+
+        try:
+            from platforms._browser_backend import parse_checkout_mode
+            from platforms.chatgpt.browser_register import (
+                ChatGPTBrowserRegister,
+                _build_proxy_config,
+                _do_codex_oauth,
+            )
+            from platforms.chatgpt.browser_get_rt import setup_phone_otp_skip_interception
+            from platforms.chatgpt.oauth import generate_oauth_url
+            from platforms.chatgpt.constants import CODEX_CLIENT_ID, CODEX_REDIRECT_URI, CODEX_SCOPE
+
+            # 预生成 OAuth 参数（curl fallback 用）
+            oauth_start = generate_oauth_url(
+                redirect_uri=CODEX_REDIRECT_URI,
+                scope=CODEX_SCOPE,
+                client_id=CODEX_CLIENT_ID,
+            )
+
+            if str(browser_mode or "").startswith("bitbrowser_"):
+                from application.bitbrowser_profiles import (
+                    acquire_profile_for_browser_mode,
+                )
+                bit_profile_id, acquired_profile_id = acquire_profile_for_browser_mode(
+                    browser_mode,
+                    fallback=bit_profile_id,
+                    log_fn=log_fn,
+                )
+
+            backend_config = parse_checkout_mode(browser_mode, bit_profile_id=bit_profile_id)
+            otp_callback, otp_error = self._build_get_rt_mailbox_otp_callback(account, log_fn, proxy)
+            if not otp_callback:
+                return {"ok": False, "error": f"获取rt失败: {otp_error}"}
+
+            log_fn(f"获取rt(绕过): {account.email}, browser_mode={browser_mode}")
+
+            reg = ChatGPTBrowserRegister(
+                headless=backend_config.is_headless,
+                proxy=proxy,
+                log_fn=log_fn,
+                backend_config=backend_config,
+            )
+
+            if reg.backend_config.is_bitbrowser:
+                launch_opts = {"headless": reg.backend_config.is_headless}
+            else:
+                cam_proxy = _build_proxy_config(reg.proxy)
+                launch_opts = {"headless": reg.headless}
+                if cam_proxy:
+                    launch_opts["proxy"] = cam_proxy
+
+            with reg._open_browser(launch_opts) as browser:
+                page = browser.new_page()
+                setup_phone_otp_skip_interception(page, log=log_fn)
+                log_fn("  获取rt(绕过): session/select 拦截器已就绪（phone_otp→consent）")
+
+                if callable(cancel_fn) and cancel_fn():
+                    return {"ok": False, "error": "任务已取消"}
+
+                result = _do_codex_oauth(
+                    page, {}, account.email, account.password,
+                    otp_callback,
+                    None,
+                    proxy, log_fn,
+                    oauth_start=oauth_start,
+                )
+
+                # ★ Fallback: curl 补全会话 (workspace/select → callback)
+                if not isinstance(result, dict) or not result.get("access_token"):
+                    import time as _time, json as _json, re as _re
+                    from platforms.chatgpt.browser_register import _get_cookies
+                    cookies_dict = _get_cookies(page)
+                    log_fn("  获取rt(绕过): _do_codex_oauth 退出，curl 补全...")
+                    try:
+                        import curl_cffi.requests as _curl_requests
+                        s = _curl_requests.Session()
+                        cookie_parts = [f'{k}={v}' for k, v in cookies_dict.items() if v]
+                        cookie_header = '; '.join(cookie_parts)
+                        headers = {
+                            "accept": "application/json",
+                            "origin": "https://auth.openai.com",
+                            "referer": "https://auth.openai.com/sign-in-with-chatgpt/codex/consent",
+                            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                            "cookie": cookie_header,
+                        }
+                        workspace_id = ""
+                        # Try 1: client_auth_session_dump
+                        dump_resp = s.get("https://auth.openai.com/api/accounts/client_auth_session_dump",
+                            headers=headers, timeout=30, impersonate="chrome")
+                        log_fn(f"  获取rt(绕过): client_auth_session_dump -> {dump_resp.status_code}")
+                        if dump_resp.status_code < 400:
+                            dump_data = dump_resp.json() if dump_resp.text else {}
+                            workspaces = dump_data.get("workspaces") or []
+                            if workspaces:
+                                workspace_id = str(workspaces[0].get("id") or "")
+                            log_fn(f"  获取rt(绕过): dump workspaces={len(workspaces)}")
+
+                        # Try 2: use account's user_id as workspace_id
+                        if not workspace_id and account.user_id:
+                            workspace_id = account.user_id
+                            log_fn(f"  获取rt(绕过): 尝试 user_id={workspace_id[:20]}...")
+
+                        # Try 3: POST workspace/select with each candidate
+                        for ws_candidate in [workspace_id] if workspace_id else []:
+                            ws_resp = s.post(
+                                "https://auth.openai.com/api/accounts/workspace/select",
+                                data=_json.dumps({"workspace_id": ws_candidate}),
+                                headers={**headers, "content-type": "application/json"},
+                                allow_redirects=False, timeout=30, impersonate="chrome",
+                            )
+                            log_fn(f"  获取rt(绕过): workspace/select({ws_candidate[:16]}...) -> {ws_resp.status_code}")
+                            if ws_resp.status_code < 400:
+                                ws_data = ws_resp.json() if ws_resp.text else {}
+                                cb_url = str(ws_data.get("continue_url") or "")
+                                # Also check Location header
+                                if not cb_url:
+                                    cb_url = str(ws_resp.headers.get("Location") or "")
+                                if "code=" in cb_url or "localhost:1455" in cb_url:
+                                    m = _re.search(r'state=([^&\s]+)', cb_url)
+                                    cb_state = m.group(1) if m else oauth_start.state
+                                    from platforms.chatgpt.oauth import submit_callback_url
+                                    result_json = submit_callback_url(
+                                        callback_url=cb_url, expected_state=cb_state,
+                                        code_verifier=oauth_start.code_verifier,
+                                        redirect_uri=oauth_start.redirect_uri,
+                                        client_id=oauth_start.client_id, proxy_url=proxy,
+                                    )
+                                    result = _json.loads(result_json)
+                                    log_fn("  获取rt(绕过): curl workspace/select 补全成功!")
+                                    break
+                    except Exception as curl_exc:
+                        log_fn(f"  获取rt(绕过): curl 补全异常: {curl_exc}")
+
+                if not isinstance(result, dict) or not result.get("access_token"):
+                    error_detail = "OAuth 未返回 token"
+                    if isinstance(result, dict):
+                        error_detail = str(result.get("error") or result.get("detail") or error_detail)
+                    return {"ok": False, "error": f"获取rt失败: {error_detail}"}
+
+                refresh_token = str(result.get("refresh_token") or "")
+                access_token = str(result.get("access_token") or "")
+                id_token = str(result.get("id_token") or "")
+                result_data = dict(result)
+                id_token_claims = {}
+                try:
+                    from platforms.chatgpt.oauth import _jwt_claims_no_verify
+                    id_token_claims = _jwt_claims_no_verify(id_token)
+                    if id_token_claims:
+                        result_data["id_token_claims"] = id_token_claims
+                except Exception:
+                    id_token_claims = {}
+                profile = {}
+                try:
+                    from platforms.chatgpt.browser_oauth import _fetch_profile
+                    profile = _fetch_profile(access_token, proxy=proxy)
+                    if profile:
+                        result_data["profile"] = profile
+                        result_data["remote_user"] = profile
+                except Exception as exc:
+                    log_fn(f"  获取rt: profile 拉取失败（忽略）: {exc}")
+                resolved_email = str(
+                    result_data.get("email")
+                    or (profile.get("email") if isinstance(profile, dict) else "")
+                    or account.email
+                )
+                result_data.update(
+                    {
+                        "access_token": access_token,
+                        "refresh_token": refresh_token,
+                        "id_token": id_token,
+                        "account_id": str(result.get("account_id") or ""),
+                        "email": resolved_email,
+                        "message": "refresh_token 获取成功" if refresh_token else "access_token 获取成功（无 refresh_token）",
+                    }
+                )
+                log_fn(
+                    f"  获取rt成功: {account.email}"
+                    f" access_token={access_token[:20]}..."
+                    f" refresh_token={'有' if refresh_token else '无'}"
+                )
+
+                return {
+                    "ok": True,
+                    "data": result_data,
+                }
+
+        except Exception as exc:
+            log_fn(f"  获取rt异常: {exc}")
+            return {"ok": False, "error": f"获取rt异常: {exc}"}
+        finally:
+            if acquired_profile_id:
+                try:
+                    from application.bitbrowser_profiles import release_acquired_profile
+                    release_acquired_profile(acquired_profile_id, log_fn=log_fn)
+                except Exception:
+                    pass
 
     def _build_turnstile_solver_for_checkout(self):
         """构造给 Camoufox checkout 用的验证码求解回调。

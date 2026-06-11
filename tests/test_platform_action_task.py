@@ -478,6 +478,31 @@ def test_chatgpt_auto_plus_followup_omits_unset_checkout_mode_and_record_har(mon
     assert "record_har" not in forwarded
 
 
+def test_get_rt_task_forwards_record_har_to_platform_action(monkeypatch):
+    seen_params = []
+
+    class FakeRuntime:
+        def execute_action(self, command, *, log_fn=None, cancel_check=None):
+            seen_params.append(dict(command.params))
+            return ActionExecutionResult(ok=True, data={"message": "ok"})
+
+    monkeypatch.setattr(runtime_module, "PlatformRuntime", FakeRuntime)
+    logger = _FakeLogger()
+
+    tasks_module._execute_get_rt_task(
+        {
+            "ids": [123],
+            "browser_mode": "camoufox_headed",
+            "record_har": "true",
+            "concurrency": 1,
+        },
+        logger,
+    )
+
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert seen_params[0]["record_har"] == "true"
+
+
 def test_chatgpt_auto_plus_followup_returns_error_when_payment_link_fails(monkeypatch):
     class FakeLogger(_FakeLogger):
         def add_cashier_url(self, url):
@@ -676,3 +701,77 @@ def test_platform_runtime_persists_cashier_url_even_when_action_fails_after_link
     assert result.error == "checkout failed"
     assert patched["cashier_url"] == "https://checkout.stripe.com/c/pay/cs_test_link"
     assert patched["summary_updates"]["cashier_url"] == "https://checkout.stripe.com/c/pay/cs_test_link"
+
+
+def test_platform_runtime_persists_get_rt_tokens_and_user_info(monkeypatch):
+    patched = {}
+
+    class FakeSession:
+        def __init__(self, engine):
+            self.added = []
+            self.committed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, model_cls, account_id):
+            return type("Model", (), {"id": account_id, "platform": "chatgpt", "updated_at": None})()
+
+        def add(self, model):
+            self.added.append(model)
+
+        def commit(self):
+            self.committed = True
+
+    class FakePlatform:
+        def __init__(self, config=None):
+            pass
+
+        def execute_action(self, action_id, account, params):
+            return {
+                "ok": True,
+                "data": {
+                    "access_token": "access-token",
+                    "refresh_token": "refresh-token",
+                    "id_token": "id-token",
+                    "account_id": "acct-123",
+                    "email": "real@example.com",
+                    "expired": "2026-06-10T15:00:00Z",
+                    "last_refresh": "2026-06-10T14:00:00Z",
+                    "type": "codex",
+                    "profile": {"email": "real@example.com", "name": "Real User"},
+                    "id_token_claims": {"email": "real@example.com", "sub": "auth0|abc"},
+                },
+            }
+
+    def fake_patch_account_graph(session, model, **kwargs):
+        patched.update(kwargs)
+
+    monkeypatch.setattr(runtime_module, "Session", FakeSession)
+    monkeypatch.setattr(runtime_module, "load_all", lambda: None)
+    monkeypatch.setattr(runtime_module, "get", lambda platform: FakePlatform)
+    monkeypatch.setattr(runtime_module, "build_platform_account", lambda session, model: object())
+    monkeypatch.setattr(runtime_module, "patch_account_graph", fake_patch_account_graph)
+
+    result = runtime_module.PlatformRuntime().execute_action(
+        ActionExecutionCommand(
+            platform="chatgpt",
+            account_id=123,
+            action_id="get_rt",
+            params={},
+        )
+    )
+
+    assert result.ok is True
+    assert patched["credential_updates"]["access_token"] == "access-token"
+    assert patched["credential_updates"]["refresh_token"] == "refresh-token"
+    assert patched["credential_updates"]["id_token"] == "id-token"
+    assert patched["credential_updates"]["account_id"] == "acct-123"
+    summary = patched["summary_updates"]
+    assert summary["remote_email"] == "real@example.com"
+    assert summary["codex_oauth"]["account_id"] == "acct-123"
+    assert summary["codex_oauth"]["profile"]["name"] == "Real User"
+    assert summary["codex_oauth"]["id_token_claims"]["sub"] == "auth0|abc"

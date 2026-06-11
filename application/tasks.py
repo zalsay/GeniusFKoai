@@ -32,6 +32,8 @@ TASK_TYPE_ACCOUNT_CHECK_ALL = "account_check_all"
 TASK_TYPE_PLATFORM_ACTION = "platform_action"
 TASK_TYPE_PHONE_BIND = "phone_bind"
 TASK_TYPE_CODEX_OAUTH = "codex_oauth"
+TASK_TYPE_GET_RT = "get_rt"
+TASK_TYPE_GET_RT_BYPASS = "get_rt_bypass"
 TASK_TYPE_GOPAY_PAY_CHATGPT = "gopay_pay_chatgpt"
 TASK_TYPE_GOPAY_REGISTER_ACCOUNT = "gopay_register_account"
 
@@ -278,6 +280,33 @@ def create_codex_oauth_task(payload: dict[str, Any]) -> dict[str, Any]:
     total = len(ids) if ids else (1 if account_id > 0 else 0)
     return create_task(
         task_type=TASK_TYPE_CODEX_OAUTH,
+        platform=str(payload.get("platform", "chatgpt") or "chatgpt"),
+        payload=payload,
+        progress_total=max(total, 1),
+    )
+
+
+def create_get_rt_task(payload: dict[str, Any]) -> dict[str, Any]:
+    """批量获取 refresh_token 任务创建。
+
+    payload 包含 ids（账号 ID 列表）、browser_mode、concurrency。
+    """
+    ids = [int(item) for item in payload.get("ids") or [] if int(item or 0) > 0]
+    total = len(ids) if ids else 1
+    return create_task(
+        task_type=TASK_TYPE_GET_RT,
+        platform=str(payload.get("platform", "chatgpt") or "chatgpt"),
+        payload=payload,
+        progress_total=max(total, 1),
+    )
+
+
+def create_get_rt_bypass_task(payload: dict[str, Any]) -> dict[str, Any]:
+    """批量获取 refresh_token（绕过手机号）任务创建。"""
+    ids = [int(item) for item in payload.get("ids") or [] if int(item or 0) > 0]
+    total = len(ids) if ids else 1
+    return create_task(
+        task_type=TASK_TYPE_GET_RT_BYPASS,
         platform=str(payload.get("platform", "chatgpt") or "chatgpt"),
         payload=payload,
         progress_total=max(total, 1),
@@ -785,6 +814,8 @@ def execute_task(task_id: str) -> None:
         TASK_TYPE_PLATFORM_ACTION: _execute_platform_action_task,
         TASK_TYPE_PHONE_BIND: _execute_phone_bind_task,
         TASK_TYPE_CODEX_OAUTH: _execute_codex_oauth_task,
+        TASK_TYPE_GET_RT: _execute_get_rt_task,
+        TASK_TYPE_GET_RT_BYPASS: _execute_get_rt_bypass_task,
         TASK_TYPE_GOPAY_PAY_CHATGPT: _execute_gopay_pay_chatgpt_task,
         TASK_TYPE_GOPAY_REGISTER_ACCOUNT: _execute_gopay_register_account_task,
     }
@@ -1767,6 +1798,208 @@ def _execute_codex_oauth_task(payload: dict[str, Any], logger: TaskLogger) -> No
         return
     final_status = TASK_STATUS_SUCCEEDED if failure_count == 0 else TASK_STATUS_FAILED
     logger.finish(final_status)
+
+
+def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
+    """批量获取 refresh_token（跳过手机验证）。"""
+    if logger.is_cancel_requested():
+        logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")
+        return
+    ids = [int(item) for item in payload.get("ids") or [] if int(item or 0) > 0]
+    if not ids:
+        account_id = int(payload.get("account_id") or 0)
+        if account_id > 0:
+            ids = [account_id]
+    if not ids:
+        logger.finish(TASK_STATUS_FAILED, error="缺少 account_id")
+        return
+    total = len(ids)
+    concurrency = min(max(int(payload.get("concurrency") or 1), 1), total)
+    browser_mode = str(payload.get("browser_mode") or "camoufox_headed")
+    logger.set_progress(0, total)
+    logger.log(f"开始获取rt：账号 {total} 个，并发 {concurrency}，浏览器模式 {browser_mode}")
+
+    from infrastructure.platform_runtime import PlatformRuntime
+    from core.db import engine, AccountModel
+    from sqlmodel import Session
+
+    results: list[dict[str, Any] | None] = [None] * total
+    completed = 0
+
+    def run_one(index: int, account_id: int) -> dict[str, Any]:
+        logger.set_subtask(f"get_rt_{index + 1}", f"账号 {account_id}")
+        try:
+            if logger.is_cancel_requested():
+                return {"ok": False, "account_id": account_id, "error": "任务已取消"}
+            logger.log(f"[{index + 1}/{total}] 获取rt: 账号 #{account_id}")
+            runtime = PlatformRuntime()
+            sms_provider = str(payload.get("sms_provider") or "").strip().lower()
+            result = runtime.execute_action(
+                type("Command", (), {
+                    "platform": "chatgpt",
+                    "account_id": account_id,
+                    "action_id": "get_rt",
+                    "params": {
+                        "browser_mode": browser_mode,
+                        "record_har": str(payload.get("record_har") or "").strip().lower(),
+                        "sms_provider": sms_provider,
+                        "smspool_api_key": str(payload.get("smspool_api_key") or ""),
+                        "smspool_max_price": str(payload.get("smspool_max_price") or "0.13"),
+                        "smsapi_phone": str(payload.get("smsapi_phone") or ""),
+                        "smsapi_url": str(payload.get("smsapi_url") or ""),
+                    },
+                })(),
+                log_fn=logger.log,
+                cancel_check=logger.is_cancel_requested,
+            )
+            if result.ok:
+                logger.log(f"[{index + 1}/{total}] 获取rt成功: 账号 #{account_id}")
+                return {"ok": True, "account_id": account_id, "data": result.data}
+            else:
+                error = str(result.error or "unknown error")
+                logger.log(f"[{index + 1}/{total}] 获取rt失败 #{account_id}: {error}", level="error")
+                return {"ok": False, "account_id": account_id, "error": error}
+        except Exception as exc:
+            error = str(exc)
+            logger.log(f"[{index + 1}/{total}] 获取rt异常 #{account_id}: {error}", level="error")
+            return {"ok": False, "account_id": account_id, "error": error}
+        finally:
+            logger.clear_subtask()
+
+    from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        future_map = {}
+        next_index = 0
+        while next_index < total and len(future_map) < concurrency and not logger.is_cancel_requested():
+            future = pool.submit(run_one, next_index, ids[next_index])
+            future_map[future] = next_index
+            next_index += 1
+
+        while future_map:
+            done, _pending = wait(future_map.keys(), return_when=FIRST_COMPLETED)
+            for future in done:
+                index = future_map.pop(future)
+                try:
+                    item = future.result()
+                except Exception as exc:
+                    item = {"ok": False, "account_id": ids[index], "error": str(exc)}
+                results[index] = item
+                if item.get("ok"):
+                    logger.record_success()
+                else:
+                    logger.record_error(str(item.get("error") or "unknown error"))
+                completed += 1
+                logger.set_progress(completed, total)
+
+            while next_index < total and len(future_map) < concurrency and not logger.is_cancel_requested():
+                future = pool.submit(run_one, next_index, ids[next_index])
+                future_map[future] = next_index
+                next_index += 1
+
+    final_results = [item for item in results if item is not None]
+    success_count = sum(1 for item in final_results if item.get("ok"))
+    failure_count = len(final_results) - success_count
+    result_data = {
+        "total": total,
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "results": final_results,
+    }
+    logger.set_result_data(result_data)
+    if logger.is_cancel_requested() and len(final_results) < total:
+        logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")
+        return
+    final_status = TASK_STATUS_SUCCEEDED if failure_count == 0 else TASK_STATUS_FAILED
+    logger.finish(final_status)
+
+
+def _execute_get_rt_bypass_task(payload: dict[str, Any], logger: TaskLogger) -> None:
+    """批量获取 refresh_token（绕过手机号，session/select 拦截）。"""
+    if logger.is_cancel_requested():
+        logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")
+        return
+    ids = [int(item) for item in payload.get("ids") or [] if int(item or 0) > 0]
+    if not ids:
+        logger.finish(TASK_STATUS_FAILED, error="缺少 account_id")
+        return
+    total = len(ids)
+    concurrency = min(max(int(payload.get("concurrency") or 1), 1), total)
+    browser_mode = str(payload.get("browser_mode") or "camoufox_headed")
+    logger.set_progress(0, total)
+    logger.log(f"开始获取rt(绕过)：账号 {total} 个，并发 {concurrency}，{browser_mode}")
+
+    from infrastructure.platform_runtime import PlatformRuntime
+    from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+
+    results: list[dict[str, Any] | None] = [None] * total
+    completed = 0
+
+    def run_one(index: int, account_id: int) -> dict[str, Any]:
+        logger.set_subtask(f"get_rt_bypass_{index + 1}", f"账号 {account_id}")
+        try:
+            if logger.is_cancel_requested():
+                return {"ok": False, "account_id": account_id, "error": "任务已取消"}
+            logger.log(f"[{index + 1}/{total}] 获取rt(绕过): 账号 #{account_id}")
+            runtime = PlatformRuntime()
+            result = runtime.execute_action(
+                type("Command", (), {
+                    "platform": "chatgpt",
+                    "account_id": account_id,
+                    "action_id": "get_rt_bypass",
+                    "params": {"browser_mode": browser_mode},
+                })(),
+                log_fn=logger.log,
+                cancel_check=logger.is_cancel_requested,
+            )
+            if result.ok:
+                logger.log(f"[{index + 1}/{total}] 获取rt(绕过)成功: 账号 #{account_id}")
+                return {"ok": True, "account_id": account_id, "data": result.data}
+            else:
+                error = str(result.error or "unknown error")
+                logger.log(f"[{index + 1}/{total}] 获取rt(绕过)失败 #{account_id}: {error}", level="error")
+                return {"ok": False, "account_id": account_id, "error": error}
+        except Exception as exc:
+            logger.log(f"[{index + 1}/{total}] 获取rt(绕过)异常 #{account_id}: {exc}", level="error")
+            return {"ok": False, "account_id": account_id, "error": str(exc)}
+        finally:
+            logger.clear_subtask()
+
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        future_map = {}
+        next_index = 0
+        while next_index < total and len(future_map) < concurrency and not logger.is_cancel_requested():
+            future = pool.submit(run_one, next_index, ids[next_index])
+            future_map[future] = next_index
+            next_index += 1
+        while future_map:
+            done, _pending = wait(future_map.keys(), return_when=FIRST_COMPLETED)
+            for future in done:
+                index = future_map.pop(future)
+                try:
+                    item = future.result()
+                except Exception as exc:
+                    item = {"ok": False, "account_id": ids[index], "error": str(exc)}
+                results[index] = item
+                if item.get("ok"):
+                    logger.record_success()
+                else:
+                    logger.record_error(str(item.get("error") or "unknown error"))
+                completed += 1
+                logger.set_progress(completed, total)
+            while next_index < total and len(future_map) < concurrency and not logger.is_cancel_requested():
+                future = pool.submit(run_one, next_index, ids[next_index])
+                future_map[future] = next_index
+                next_index += 1
+
+    final_results = [item for item in results if item is not None]
+    success_count = sum(1 for item in final_results if item.get("ok"))
+    failure_count = len(final_results) - success_count
+    logger.set_result_data({"total": total, "success_count": success_count, "failure_count": failure_count, "results": final_results})
+    if logger.is_cancel_requested() and len(final_results) < total:
+        logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")
+        return
+    logger.finish(TASK_STATUS_SUCCEEDED if failure_count == 0 else TASK_STATUS_FAILED)
 
 
 def _execute_gopay_register_account_task(payload: dict[str, Any], logger: TaskLogger) -> None:
