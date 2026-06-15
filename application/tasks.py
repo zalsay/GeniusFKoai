@@ -18,6 +18,7 @@ from core.account_graph import (
     recover_lifecycle_status_for_valid_account,
 )
 from core.base_platform import AccountStatus, RegisterConfig
+from core.proxy_pool import proxy_pool
 from core.datetime_utils import format_local_clock, serialize_datetime
 from core.db import AccountModel, TaskEventModel, TaskLog, TaskModel, engine, save_account
 from core.platform_accounts import build_platform_account
@@ -866,8 +867,6 @@ def _resolve_registration_proxy_for_platform(
     explicit_proxy: str | None,
     proxy_getter: Callable[[], str | None],
 ) -> str | None:
-    if str(platform_name or "").strip().lower() == "chatgpt":
-        return None
     return explicit_proxy or proxy_getter()
 
 
@@ -1142,7 +1141,6 @@ def _auto_followup_chatgpt_plus_payment(
 
 
 def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
-    from core.proxy_pool import proxy_pool
 
     count = max(int(payload.get("count", 1) or 1), 1)
     concurrency = min(max(int(payload.get("concurrency", 1) or 1), 1), count, 5)
@@ -2471,7 +2469,7 @@ def _register_chatgpt_shortlink_grab_for_gopay(
         midtrans_holder: dict[str, str] = {}
         try:
             resolved_proxy = _resolve_registration_proxy_for_platform(
-                "chatgpt", explicit_proxy=None, proxy_getter=lambda: None,
+                "chatgpt", explicit_proxy=None, proxy_getter=proxy_pool.get_next,
             )
             # 每个并发槽独占一个 BitBrowser profile（同 profile 不能并发开）。
             effective_bit_profile = bit_profile_id
@@ -2596,7 +2594,7 @@ def _register_chatgpt_accounts_for_gopay(
             resolved_proxy = _resolve_registration_proxy_for_platform(
                 "chatgpt",
                 explicit_proxy=None,
-                proxy_getter=lambda: None,
+                proxy_getter=proxy_pool.get_next,
             )
             platform = _build_platform_instance(
                 "chatgpt", payload, logger, resolved_proxy=resolved_proxy
