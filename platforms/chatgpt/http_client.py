@@ -1,4 +1,5 @@
 """OpenAI 专用 HTTP 客户端"""
+import os
 from typing import Any, Dict, Optional, Tuple
 
 from core.http_client import HTTPClient, HTTPClientError, RequestConfig
@@ -51,6 +52,10 @@ class OpenAIHTTPClient(HTTPClient):
         Returns:
             Tuple[是否支持, 位置信息]
         """
+        # 环境变量跳过 loc 检测
+        if os.environ.get("SKIP_IP_LOCATION_CHECK", "").strip().lower() in ("1", "true", "yes"):
+            return True, None
+
         try:
             response = self.get("https://cloudflare.com/cdn-cgi/trace", timeout=10)
             trace_text = response.text
